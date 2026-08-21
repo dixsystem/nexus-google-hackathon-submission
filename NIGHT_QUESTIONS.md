@@ -111,3 +111,26 @@ la deseada, o si se prefiere que `nexus_flagged=False` fuerce siempre
 NO_CONSENSUS en vez de ESCALATE cuando Gemini/Gemma coinciden en interés.
 
 ---
+
+## M-8 — model_id exacto de Lyria sin verificar; llamada real nunca invocada
+
+**Contexto:** `grep -rni "lyria"` sobre todo el repo no arrojó ningún
+resultado — cero precedente local. No tengo forma de verificar en vivo,
+sin gastar cuota real, el nombre exacto de modelo ni el método SDK
+correcto (`generate_content` vs. algún método específico de audio/música
+del SDK `google-genai` instalado). Uso `DEFAULT_LYRIA_MODEL_ID =
+"lyria-3-clip-preview"` como sugirió la propia misión, pero marcado
+explícitamente como NO VERIFICADO en el código.
+
+**Decisión tomada:** `generate_alert_sound()` exige un `transport`
+inyectado (sin default real, misma disciplina que M-1/M-3); si
+`transport=None` (el caso por defecto), la función se salta por completo
+sin lanzar excepción -- devuelve `None` de inmediato, tratado como
+"Lyria no está configurado", exactamente el modo fail-safe que pide la
+misión. Ningún test ni código de este módulo invoca una API de Lyria
+real en ningún momento de esta sesión.
+
+**Pendiente de revisión humana:** confirmar el `model_id`/método SDK real
+de Lyria antes de cablear un transport real en producción.
+
+---
