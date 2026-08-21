@@ -77,7 +77,7 @@ The accepted real smoke reached:
 ```text
 mode=real
 status=STAGED
-candidates=1
+candidates=1-5 (Gemini real mode is non-deterministic; offline mode always returns exactly 1)
 authority_effects=NONE
 ```
 
@@ -115,13 +115,27 @@ See [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Google integration
 
-- Gemini API: real structured generation.
-- Google Gen AI SDK: the supported Google agent framework used by the
-  isolated backend.
-- Google Cloud infrastructure: required before final submission. The minimal
-  recommended implementation is Cloud Run because it makes the same demo
-  path visible and reproducible without adding a database or ornamental
-  infrastructure.
+- Gemini API: real structured generation, verified against gemini-3.5-flash.
+- Google Gen AI SDK: the supported Google agent framework used by the isolated backend (google-genai==2.18.1).
+- Google Cloud infrastructure: deployed and verified on Cloud Run.
+
+## Deployed Cloud Run service
+
+Live URL: https://nexus-google-agentic-demo-775963240525.us-central1.run.app
+
+Health check: curl https://nexus-google-agentic-demo-775963240525.us-central1.run.app/health
+Offline demo: curl -X POST https://nexus-google-agentic-demo-775963240525.us-central1.run.app/demo/offline
+Real demo: curl -X POST https://nexus-google-agentic-demo-775963240525.us-central1.run.app/demo
+
+Redeploy from a clean checkout:
+1. git clone https://github.com/dixsystem/nexus-google-hackathon-submission.git
+2. cd nexus-google-hackathon-submission
+3. export GEMINI_API_KEY=your-key-here
+4. gcloud config set project your-gcp-project
+5. gcloud services enable run.googleapis.com cloudbuild.googleapis.com
+6. gcloud run deploy nexus-google-agentic-demo --source=. --region=us-central1 --allow-unauthenticated --set-env-vars=GEMINI_API_KEY=$GEMINI_API_KEY,GEMINI_MODEL=gemini-3.5-flash --port=8080
+
+A root-level Dockerfile (copy of google-all-things-agentic-submission/cloud/Dockerfile) is committed so gcloud run deploy --source=. finds it without extra flags.
 
 ## Pre-existing work disclosure
 
