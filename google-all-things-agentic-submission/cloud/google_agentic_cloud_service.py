@@ -64,7 +64,7 @@ def run_cloud_demo(*, mode: str, environ=None):
     registry = default_provider_capability_registry()
     producer = MissionGeneratorCandidateProducer(provider, registry=registry)
     candidates = producer.produce_batch(
-        goal=_GOAL, available_mission_ids=("M-901",)
+        goal=_GOAL, available_mission_ids=("M-901", "M-902", "M-903", "M-904", "M-905")
     )
     destination = Path(tempfile.mkdtemp(prefix="google-agentic-cloud-"))
     batch = stage_proposal_batch(

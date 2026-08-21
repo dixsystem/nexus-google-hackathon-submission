@@ -16,7 +16,7 @@ import re
 CONTRACT_SCHEMA_VERSION = 1
 _MISSION_ID = re.compile(r"M-\d{3}\Z")
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
-_CAPABILITY = re.compile(r"[a-z][a-z0-9.]{2,127}\Z")
+_CAPABILITY = re.compile(r"[a-z][a-z0-9.-]{2,127}\Z")
 _PARAMETER_KEY = re.compile(r"[a-z][a-z0-9_]{0,63}\Z")
 
 
