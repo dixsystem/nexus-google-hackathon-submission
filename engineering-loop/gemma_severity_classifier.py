@@ -3,16 +3,17 @@ incidente red-team (M-3), separada a propósito del juicio de Gemini que
 generó el intento (red_team_attacker.py) -- consensus_gate.py (M-5) exige
 que ambos jueces coincidan antes de escalar nada a un humano.
 
-Nota de diseño (ver NIGHT_QUESTIONS.md, sección M-3): `grep -rni "gemma"`
-sobre todo este repo no encontró ningún precedente de qué model_id usar
-para Gemma vía el SDK google-genai ya instalado
-(antigravity_google_genai_backend.py). Por eso GemmaSeverityClassifier
-exige model_id explícito en el constructor -- sin default hardcodeado --
-misma disciplina que AntigravityGeminiConfig ya aplica para Gemini
-("Sin default deliberado"). El camino real (classify(), vía el mismo
-AntigravityGeminiProvider ya existente) queda estructuralmente listo
-pero requiere que el llamador inyecte un transport real y un model_id
-verificado -- ninguno de los dos ocurre en esta misión.
+Nota de diseño (ver NIGHT_QUESTIONS.md, sección M-3 -- RESUELTA por
+revisión humana): el model_id de Gemma quedó verificado contra
+documentación oficial (ai.google.dev/gemma) -- se llama exactamente
+igual que Gemini, mismo SDK google-genai, mismo método
+client.models.generate_content(model=..., contents=...).
+GEMMA_MODEL_ID = "gemma-4-26b-a4b-it" es ahora el default de
+GemmaSeverityClassifier.model_id (queda overridable si en el futuro se
+necesita otra variante de Gemma). El camino real (classify(), vía el
+mismo AntigravityGeminiProvider ya existente) sigue requiriendo que el
+llamador inyecte un transport real -- eso no cambió; lo único que se
+resolvió fue la incertidumbre sobre el identificador del modelo.
 
 Camino garantizado y seguro por defecto: classify_with_fallback_rules(),
 un clasificador determinista basado en reglas, sin red, marcado
@@ -39,6 +40,13 @@ import red_team_incident as incident_module
 DEFAULT_TIMEOUT_SECONDS = 30.0
 DEFAULT_MAX_INPUT_CHARS = 100_000
 DEFAULT_MAX_RESPONSE_CHARS = 100_000
+
+# Verificado contra ai.google.dev/gemma (revisión humana, ver
+# NIGHT_QUESTIONS.md sección M-3, RESUELTA): Gemma se invoca por el
+# mismo SDK google-genai y el mismo client.models.generate_content()
+# que ya usa AntigravityGeminiProvider para Gemini -- este es el
+# model_id por defecto de GemmaSeverityClassifier, no un valor inventado.
+GEMMA_MODEL_ID = "gemma-4-26b-a4b-it"
 
 SEVERITY_LEVELS = ("BAJO", "MEDIO", "ALTO")
 SOURCE_GEMMA = "GEMMA"
@@ -117,11 +125,14 @@ class GemmaSeverityClassifier:
     Fail-closed: cualquier respuesta malformada o inaccesibilidad de Gemma
     lanza GemmaSeverityClassifierError -- este método NUNCA cae solo al
     fallback de reglas; eso es una decisión explícita del llamador via
-    classify_with_fallback_rules()."""
+    classify_with_fallback_rules().
+
+    model_id por defecto: GEMMA_MODEL_ID (verificado, ver NIGHT_QUESTIONS.md
+    sección M-3) -- overridable para otra variante de Gemma si hace falta."""
 
     def __init__(
         self,
-        model_id: str,
+        model_id: str = GEMMA_MODEL_ID,
         *,
         timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
         max_input_chars: int = DEFAULT_MAX_INPUT_CHARS,
@@ -217,6 +228,7 @@ def classify_with_fallback_rules(incident, rejection_reason) -> SeverityAssessme
 
 
 __all__ = (
+    "GEMMA_MODEL_ID",
     "SEVERITY_LEVELS",
     "SOURCE_GEMMA",
     "SOURCE_FALLBACK_RULES",

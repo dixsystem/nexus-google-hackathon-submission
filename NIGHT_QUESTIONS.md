@@ -35,7 +35,17 @@ almacén de auditoría existente (ninguno existe hoy en este repo).
 
 ---
 
-## M-3 — model_id exacto de Gemma sin verificar; classify() real diferido
+## M-3 — model_id exacto de Gemma sin verificar; classify() real diferido — **RESUELTA**
+
+**RESUELTO (revisión humana, sesión posterior a la noche del 2026-08-21):**
+model_id confirmado por documentación oficial de Google
+(ai.google.dev/gemma): `GEMMA_MODEL_ID = "gemma-4-26b-a4b-it"`. Se llama
+exactamente igual que Gemini, mismo SDK `google-genai`, mismo método
+`client.models.generate_content(model=..., contents=...)`. Ahora es el
+default de `GemmaSeverityClassifier.model_id` (código actualizado); el
+fallback determinista `classify_with_fallback_rules()` se mantiene
+disponible para cuando no se quiera gastar cuota real. Test añadido:
+`test_default_model_id_is_the_verified_gemma_constant`.
 
 **Contexto:** `grep -rni "gemma"` sobre todo el repo (código, requirements,
 docs) no arrojó ningún resultado — cero precedente de qué model_id usar
@@ -64,7 +74,7 @@ transport real en producción.
 
 ---
 
-## M-5 — origen de `gemini_assessment` y regla de desempate con `nexus_flagged`
+## M-5 — origen de `gemini_assessment` y regla de desempate con `nexus_flagged` — **Contexto B RESUELTA**
 
 **Contexto A (origen de gemini_assessment):** la misión decía "puedes
 pedirle esto como parte del prompt de M-1 o como llamada separada,
@@ -109,6 +119,22 @@ calculados -- no bloquea, aprueba ni ejecuta nada; el consensus más
 **Pendiente de revisión humana:** confirmar si esta regla de desempate es
 la deseada, o si se prefiere que `nexus_flagged=False` fuerce siempre
 NO_CONSENSUS en vez de ESCALATE cuando Gemini/Gemma coinciden en interés.
+
+**RESUELTO (revisión humana, sesión posterior a la noche del 2026-08-21):**
+confirmado -- `nexus_flagged=False` con Gemini y Gemma coincidiendo en
+interés real produce ESCALATE, no ARCHIVE_LOW_INTEREST ni NO_CONSENSUS.
+Razón explícita del revisor: si dos evaluadores independientes detectan
+algo que la regla determinista de Nexus no cazó, ese es precisamente el
+escenario de MAYOR interés para revisión humana, no uno de menor
+prioridad. El comportamiento de `evaluate_consensus()` ya era este por
+diseño original (decisión conservadora de esa misma noche); esta
+revisión lo confirma como regla intencional, hace la rama explícita en
+el código (antes era un efecto derivado de la lógica general, no un
+`elif` nombrado) y añade
+`test_human_reviewed_nexus_not_flagged_ai_agreement_escalates_not_archived`
+como cobertura dedicada. Contexto A (llamada separada para
+gemini_assessment) permanece sin cambios -- no fue parte de esta
+revisión.
 
 ---
 

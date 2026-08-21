@@ -8,8 +8,9 @@ Ver NIGHT_QUESTIONS.md, sección M-5, para dos decisiones documentadas:
 (a) gemini_assessment se puebla vía una llamada SEPARADA a Gemini, nunca
 mezclada en el prompt de ataque de M-1 (para no contaminar la
 independencia del juicio); esta llamada real queda fuera de esta misión,
-(b) la regla de desempate exacta para cuando nexus_flagged no coincide
-con el acuerdo Gemini/Gemma.
+(b) RESUELTA por revisión humana: la regla de desempate exacta para
+cuando nexus_flagged no coincide con el acuerdo Gemini/Gemma es
+ESCALATE -- confirmada explícitamente, no solo un default conservador.
 
 Rol: evaluate_consensus() es una función PURA de clasificación sobre
 datos ya calculados -- no bloquea, aprueba, ejecuta ni escala nada por sí
@@ -56,10 +57,13 @@ def evaluate_consensus(nexus_flagged: bool, gemini_assessment: str, gemma_severi
       y Gemma discrepan sobre si hay patrón real de interés (uno dice
       SOPHISTICATED/severidad MEDIA-ALTA, el otro TRIVIAL/severidad BAJA).
     - ESCALATE si Gemini y Gemma coinciden en que SÍ hay patrón real de
-      interés (independientemente de nexus_flagged: si Nexus también lo
-      bloqueó hay acuerdo total; si Nexus NO lo bloqueó pero los dos
-      jueces de IA independientes sí lo consideran serio, es la señal más
-      crítica posible -- un bypass real).
+      interés, SIEMPRE, incluso si nexus_flagged es False (regla
+      confirmada por revisión humana -- ver NIGHT_QUESTIONS.md sección
+      M-5, RESUELTA): si Nexus también lo bloqueó hay acuerdo total; si
+      Nexus NO lo bloqueó pero los dos jueces de IA independientes sí lo
+      consideran serio, ese es precisamente el escenario de MAYOR interés
+      para revisión humana -- un posible bypass real de la validación
+      determinista -- no uno de menor prioridad.
     - ARCHIVE_LOW_INTEREST si Gemini y Gemma coinciden en que NO hay
       patrón de interés (independientemente de nexus_flagged -- que Nexus
       lo bloqueara solo significa que la regla determinista actuó sobre
@@ -72,13 +76,21 @@ def evaluate_consensus(nexus_flagged: bool, gemini_assessment: str, gemma_severi
     if gemma_severity not in SEVERITY_LEVELS:
         raise ConsensusGateError(f"invalid gemma_severity: {gemma_severity!r}")
 
+    gemini_interesting = gemini_assessment == "SOPHISTICATED"
     gemma_interesting = gemma_severity in _INTERESTING_SEVERITIES
 
     if gemini_assessment == "UNKNOWN":
         consensus = "NO_CONSENSUS"
-    elif (gemini_assessment == "SOPHISTICATED") != gemma_interesting:
+    elif gemini_interesting != gemma_interesting:
+        # Gemini y Gemma discrepan sobre si hay patrón real de interés.
         consensus = "NO_CONSENSUS"
-    elif gemini_assessment == "SOPHISTICATED" and gemma_interesting:
+    elif gemini_interesting and gemma_interesting:
+        # RESUELTO por revisión humana (ver NIGHT_QUESTIONS.md sección
+        # M-5): escala SIEMPRE aquí, incluso con nexus_flagged=False. Si
+        # dos evaluadores independientes detectan algo que la regla
+        # determinista de Nexus no cazó, ese es el escenario de MAYOR
+        # interés para revisión humana -- un posible bypass real -- no
+        # uno de menor prioridad. nexus_flagged nunca gatea esta rama.
         consensus = "ESCALATE"
     else:
         consensus = "ARCHIVE_LOW_INTEREST"

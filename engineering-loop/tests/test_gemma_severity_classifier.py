@@ -118,6 +118,16 @@ class GemmaSeverityClassifierClassifyTest(unittest.TestCase):
         classifier.classify(make_incident(), None, transport)
         transport.assert_called_once_with("gemma-classifier-model", mock.ANY, mock.ANY, 20.0)
 
+    def test_default_model_id_is_the_verified_gemma_constant(self):
+        # Resuelto por revisión humana (ver NIGHT_QUESTIONS.md sección
+        # M-3): GEMMA_MODEL_ID ya no es "no verificado" -- es el default.
+        transport = mock.Mock(return_value=raw_result(response_model_id=subject.GEMMA_MODEL_ID))
+        classifier = subject.GemmaSeverityClassifier()
+        classifier.classify(make_incident(), None, transport)
+        called_model_id = transport.call_args[0][0]
+        self.assertEqual(called_model_id, subject.GEMMA_MODEL_ID)
+        self.assertEqual(subject.GEMMA_MODEL_ID, "gemma-4-26b-a4b-it")
+
 
 class FallbackRulesClassifierTest(unittest.TestCase):
     def test_unblocked_with_no_rejection_reason_is_high_severity(self):

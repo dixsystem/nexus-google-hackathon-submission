@@ -84,6 +84,19 @@ class EvaluateConsensusTruthTableTest(unittest.TestCase):
         verdict = subject.evaluate_consensus(False, "SOPHISTICATED", "ALTO")
         self.assertEqual(verdict.consensus, "ESCALATE")
 
+    def test_human_reviewed_nexus_not_flagged_ai_agreement_escalates_not_archived(self):
+        # RESUELTO por revisión humana (ver NIGHT_QUESTIONS.md sección
+        # M-5): el caso nexus_flagged=False + Gemini/Gemma coincidiendo en
+        # interés real produce ESCALATE explícitamente -- nunca
+        # ARCHIVE_LOW_INTEREST ni NO_CONSENSUS. Cubre tanto severidad
+        # ALTO como MEDIO para dejar la regla sin ambigüedad.
+        for gemma_severity in ("MEDIO", "ALTO"):
+            with self.subTest(gemma_severity=gemma_severity):
+                verdict = subject.evaluate_consensus(False, "SOPHISTICATED", gemma_severity)
+                self.assertEqual(verdict.consensus, "ESCALATE")
+                self.assertNotEqual(verdict.consensus, "ARCHIVE_LOW_INTEREST")
+                self.assertNotEqual(verdict.consensus, "NO_CONSENSUS")
+
     def test_nexus_not_flagged_and_ai_judges_agree_trivial_archives(self):
         verdict = subject.evaluate_consensus(False, "TRIVIAL", "BAJO")
         self.assertEqual(verdict.consensus, "ARCHIVE_LOW_INTEREST")
