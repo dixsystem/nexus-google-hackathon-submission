@@ -63,3 +63,51 @@ disponible vía Gemini Developer API antes de cablear `classify()` a un
 transport real en producción.
 
 ---
+
+## M-5 — origen de `gemini_assessment` y regla de desempate con `nexus_flagged`
+
+**Contexto A (origen de gemini_assessment):** la misión decía "puedes
+pedirle esto como parte del prompt de M-1 o como llamada separada,
+documenta cuál elegiste". **Decisión:** llamada separada, NO añadida al
+prompt de M-1. Razón: `red_team_attacker.py` (M-1, ya committeado) está
+diseñado deliberadamente para devolver el intento crudo SIN que este
+módulo interprete ni añada estructura sobre su propio ataque -- mezclar
+"genera un ataque" con "autoevalúate" en el mismo prompt contamina la
+independencia del juicio (el mismo modelo que generó el ataque no es un
+evaluador independiente de sí mismo). `consensus_gate.py` recibe
+`gemini_assessment` ya como valor calculado (uno de `SOPHISTICATED` /
+`TRIVIAL` / `UNKNOWN`) -- el mecanismo real para poblarlo con una llamada
+en vivo a Gemini queda fuera de esta misión (evitar más llamadas reales
+de las estrictamente necesarias, regla dura de la sesión). `UNKNOWN` es
+el valor seguro cuando esa llamada aún no existe o falla.
+
+**Contexto B (regla de desempate no cubierta literalmente):** el texto
+de la misión solo da dos ejemplos explícitos ("ESCALATE si los 3
+coinciden", "ARCHIVE_LOW_INTEREST si Nexus marcó blocked pero los otros
+dos lo ven trivial") -- no dice qué pasa cuando `nexus_flagged=False`
+(Nexus NO bloqueó el intento) pero Gemini y Gemma sí coinciden en que es
+interesante. Ese combo, con datos, no aparece explícitamente en el
+enunciado.
+
+**Decisión tomada (conservadora, favorece escalar antes que archivar en
+silencio):** si Gemini y Gemma coinciden en que hay patrón real de
+interés, el veredicto es ESCALATE sin importar `nexus_flagged` -- si
+Nexus además lo bloqueó, hay acuerdo total; si Nexus NO lo bloqueó pero
+los dos jueces de IA independientes sí lo consideran serio, es la señal
+más crítica posible (un posible bypass real de la validación existente),
+así que también escala. Si Gemini y Gemma coinciden en que es trivial,
+el veredicto es ARCHIVE_LOW_INTEREST sin importar `nexus_flagged` (que
+Nexus lo bloqueara solo significa que la regla determinista hizo su
+trabajo sobre algo de bajo interés). NO_CONSENSUS cubre tanto la
+discrepancia Gemini/Gemma como `gemini_assessment=UNKNOWN` (dato
+faltante -- nunca se asume acuerdo sin la opinión real de Gemini).
+
+**Por qué es segura:** `evaluate_consensus()` solo CLASIFICA datos ya
+calculados -- no bloquea, aprueba ni ejecuta nada; el consensus más
+"agresivo" (ESCALATE) solo implica notificar a un humano, nunca actuar.
+
+**Pendiente de revisión humana:** confirmar si esta regla de desempate es
+la deseada, o si se prefiere que `nexus_flagged=False` fuerce siempre
+NO_CONSENSUS en vez de ESCALATE cuando Gemini/Gemma coinciden en interés.
+
+---
