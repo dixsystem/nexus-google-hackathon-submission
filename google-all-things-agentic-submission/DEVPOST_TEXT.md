@@ -65,13 +65,36 @@ must agree. Reproducibility also matters: an offline path can demonstrate
 governance deterministically, while a minimal real smoke proves the Google
 integration is genuine.
 
+## Red team module
+
+Beyond generating proposals, NEXUS includes an adversarial red-team pipeline
+that attacks the same authority boundary instead of exercising it
+cooperatively. A second Gemini call plays attacker, deliberately trying to
+inject fake authority fields, escalate privileges, or spoof model identity.
+Every attempt — blocked or not — is recorded as a hash-chained incident. An
+independent severity read from Gemma (a different model, so no model grades
+its own work) and an optional independent Gemini self-assessment feed a
+triple-filter consensus gate alongside NEXUS's own deterministic verdict;
+only unanimous agreement produces a quarantine report with a ready-to-review
+corrective recommendation for a human. Nothing here is ever auto-executed:
+even an attempt that survives every existing validation layer is recorded as
+`VALIDATION_BYPASS` and reported, never run. The module supports a
+deterministic offline mode, reproducible without credentials, and an
+explicit real-Gemini attack mode with a hard per-session round cap to bound
+cost. Code-complete and tested; deploying its HTTP surface to the live Cloud
+Run service is a deliberate next step, held back from this submission
+pending a supervised deployment session (see "What's next").
+
 ## What's next
 
-The immediate next step is a minimal Google Cloud deployment of the same demo
-boundary, with no additional database or ornamental services. Longer term, we
-want portable evidence bundles, stronger independent verification, and
-policy-aware integrations for more agent runtimes—without ever allowing a
-producer to silently expand its own authority.
+The core demo boundary is already deployed and verified on Cloud Run. The
+immediate next step is deploying the red team module's HTTP surface
+(`POST /redteam`, `GET /quarantine/<incident_id>`) to that same service —
+code-complete and tested, deliberately held back from this submission
+pending a supervised deployment session. Longer term, we want portable
+evidence bundles, stronger independent verification, and policy-aware
+integrations for more agent runtimes—without ever allowing a producer to
+silently expand its own authority.
 
 ## Pre-existing work disclosure
 

@@ -449,3 +449,77 @@ y, como ya estaba pendiente desde la entrada M-7a original, confirmar el
 `mode="real"` contra el servicio desplegado.
 
 ---
+
+## 2026-08-22 — PASO 1 (consolidación pre-vídeo): corrección de premisa -- Red Team NO está desplegado en Cloud Run
+
+**Contexto:** la instrucción de esta misión afirmaba como hecho consumado
+que "el executor (M-6) están completos, testeados y desplegados en Cloud
+Run real" y que había que actualizar `DEVPOST_TEXT.md`/
+`SUBMISSION_CHECKLIST.md` reflejando "Red Team funcionando con modo real
+verificado" en producción. Antes de escribir eso en materiales de
+submission reales (Devpost), lo verifiqué contra el propio repo.
+
+**Verificación (sin tocar el servicio en producción, solo lectura de
+repo):**
+- `README.md` ("Deployed Cloud Run service"), línea ~175: "Red team
+  session (M-7a): [PENDIENTE: URL tras despliegue supervisado] --
+  code-complete (`POST /redteam`, `GET /quarantine/<incident_id>`), not
+  deployed as part of this work."
+- `ARCHITECTURE.md`, fila M-7a de la tabla: "code-complete but **not
+  deployed** as part of this work; see the root README for the
+  placeholder Cloud Run URL."
+- `git log --oneline --all`: el único commit de despliegue real
+  ("docs: update README with live Cloud Run URL...", `615e80f`) es
+  ANTERIOR a todos los commits del Red Team (`0b0bcb4` en adelante) --
+  el servicio en vivo fue desplegado antes de que el Red Team existiera
+  en el código.
+- Historial de esta propia sesión (varios turnos atrás): nunca se
+  ejecutó `gcloud run deploy` en ningún momento; el intento del usuario
+  de correrlo él mismo falló por falta de `GEMINI_API_KEY` real (usó el
+  placeholder `tu_clave_actual`). El cableado de `mode="real"` para
+  `/redteam` (commit `9d00309`) se hizo y pusheó en la sesión anterior a
+  esta, sin ningún despliegue posterior.
+- `mission_executor.py` (M-6) tampoco tiene ningún llamador de
+  producción (ver entrada PASO A anterior, ya verificado por grep) --
+  "desplegado" no aplica de forma significativa a un módulo que ningún
+  endpoint invoca todavía, esté o no copiado dentro de la imagen Docker.
+
+**Decisión tomada:** NO escribí en `DEVPOST_TEXT.md` ni en
+`SUBMISSION_CHECKLIST.md` que el Red Team está "desplegado y verificado
+en producción" -- eso sería una afirmación falsa en un documento de
+submission real de un hackathon (riesgo de descalificación si un juez lo
+verifica). En su lugar:
+- `DEVPOST_TEXT.md`: la nueva sección "Red team module" lo describe como
+  "Code-complete and tested; deploying its HTTP surface to the live
+  Cloud Run service is a deliberate next step... pending a supervised
+  deployment session" -- honesto y sigue siendo un diferenciador fuerte
+  (la funcionalidad es real y está testeada, el despliegue es lo único
+  pendiente). La sección "What's next" se actualizó para reflejar que el
+  demo base SÍ está desplegado (eso es cierto, sin cambios ahí) y que el
+  siguiente paso concreto es desplegar el Red Team.
+- `SUBMISSION_CHECKLIST.md`: marqué `[x]` "Use at least one Google Cloud
+  infrastructure service" (cierto para el demo base, con la URL real
+  citada), pero añadí una nota explícita junto a ese ítem, un bullet en
+  "Devpost form", y una nota al final del archivo, todas advirtiendo
+  explícitamente no grabar ni afirmar que `/redteam` está en vivo hasta
+  que se despliegue de verdad y se verifique con una petición real.
+
+**Por qué es la decisión más conservadora:** escribir la afirmación tal
+como la pedía el enunciado habría sido más rápido, pero el coste de un
+error aquí (un juez de Devpost intenta `curl .../redteam` contra la URL
+pública y recibe 404, contradiciendo el texto de submission) es mucho
+más alto que el coste de dejar la corrección documentada para revisión
+humana mañana.
+
+**Verificación:** ningún `gcloud`, ningún cambio al servicio en
+producción -- toda la verificación de esta entrada fue lectura de
+archivos del repo y `git log` local.
+
+**Pendiente de revisión humana:** decidir si se despliega el Red Team a
+Cloud Run antes de grabar el vídeo (cambiaría la sección "What's next" y
+el checklist de nuevo, y habilitaría marcar más ítems de
+`SUBMISSION_CHECKLIST.md`), o si el vídeo se graba mostrando el Red Team
+solo en local/tests (lo cual sigue siendo un diferenciador válido, solo
+que sin el escaparate de Cloud Run).
+
+---
