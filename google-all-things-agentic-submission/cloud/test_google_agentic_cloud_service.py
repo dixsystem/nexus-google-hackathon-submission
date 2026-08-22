@@ -361,6 +361,81 @@ class RedTeamPersistenceIntegrationTest(unittest.TestCase):
         )
 
 
+# -- PASO A (sesión supervisada, despliegue): cliente real de Cloud -----
+# Storage detrás de un flag explícito de entorno --------------------------
+
+
+class FakeStorageModule:
+    """Sustituye al paquete google.cloud.storage real -- inyectado vía
+    storage_module=, nunca importado. Client() se registra como llamada
+    (construct_calls) pero nunca toca red: es un stand-in puro, igual que
+    FakeStorageClient sustituye a una instancia ya construida en los tests
+    de QuarantineStorePersistenceTest más arriba."""
+
+    def __init__(self):
+        self.construct_calls = 0
+        self.client_instance = object()
+
+    def Client(self):
+        self.construct_calls += 1
+        return self.client_instance
+
+
+class BuildStorageClientTests(unittest.TestCase):
+    def test_returns_none_when_flag_absent(self):
+        fake_module = FakeStorageModule()
+        result = subject._build_storage_client({}, storage_module=fake_module)
+        self.assertIsNone(result)
+        self.assertEqual(fake_module.construct_calls, 0)
+
+    def test_returns_none_when_flag_is_not_exactly_true(self):
+        fake_module = FakeStorageModule()
+        for value in ("false", "0", "1", "yes", "truee", ""):
+            with self.subTest(value=value):
+                result = subject._build_storage_client(
+                    {"ENABLE_REAL_STORAGE": value}, storage_module=fake_module
+                )
+                self.assertIsNone(result)
+        self.assertEqual(fake_module.construct_calls, 0)
+
+    def test_constructs_client_when_flag_is_true(self):
+        fake_module = FakeStorageModule()
+        result = subject._build_storage_client(
+            {"ENABLE_REAL_STORAGE": "true"}, storage_module=fake_module
+        )
+        self.assertIs(result, fake_module.client_instance)
+        self.assertEqual(fake_module.construct_calls, 1)
+
+    def test_flag_is_case_and_whitespace_tolerant(self):
+        for value in ("True", "TRUE ", " true"):
+            with self.subTest(value=value):
+                fake_module = FakeStorageModule()
+                result = subject._build_storage_client(
+                    {"ENABLE_REAL_STORAGE": value}, storage_module=fake_module
+                )
+                self.assertIs(result, fake_module.client_instance)
+
+    def test_default_environ_without_flag_returns_none(self):
+        # Sin pasar environ explícito, usa os.environ real -- en el entorno
+        # de test/CI la variable no está definida, así que debe devolver
+        # None, igual que el comportamiento de hoy antes de este cambio.
+        with mock.patch.dict("os.environ", {}, clear=False):
+            import os as os_module
+
+            os_module.environ.pop("ENABLE_REAL_STORAGE", None)
+            result = subject._build_storage_client(storage_module=FakeStorageModule())
+        self.assertIsNone(result)
+
+    def test_module_level_quarantine_store_defaults_to_in_memory_fallback(self):
+        # El singleton _QUARANTINE_STORE se construye una sola vez al
+        # importar el módulo, con el os.environ real de ese momento (sin
+        # ENABLE_REAL_STORAGE en CI/test) -- confirma que sigue siendo el
+        # mismo fallback in-memory de siempre, sin regresión de
+        # comportamiento por defecto.
+        store = subject.QuarantineStore(subject._build_storage_client())
+        self.assertIsNone(store._storage_client)
+
+
 if __name__ == "__main__":
     unittest.main()
 

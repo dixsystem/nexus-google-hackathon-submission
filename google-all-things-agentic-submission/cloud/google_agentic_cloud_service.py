@@ -105,7 +105,34 @@ class QuarantineStore:
         return parsed.get("quarantine_report")
 
 
-_QUARANTINE_STORE = QuarantineStore()
+def _build_storage_client(environ=None, *, storage_module=None):
+    """Construye un storage.Client() real SOLO si ENABLE_REAL_STORAGE=true
+    está presente en el entorno -- en cualquier otro caso (variable
+    ausente, vacía, o con cualquier otro valor) devuelve None sin importar
+    nada, exactamente el comportamiento de hoy (QuarantineStore cae al
+    fallback in-memory). Esto preserva la disciplina "nunca importa
+    google.cloud.storage directamente" salvo que se pida explícitamente:
+    el import de `google.cloud.storage` ocurre perezosamente, dentro de
+    esta función, solo en la rama donde el flag está activo -- así el
+    módulo entero (y sus tests) siguen funcionando sin el paquete
+    google-cloud-storage instalado mientras el flag no se active.
+
+    `storage_module` es un punto de inyección para tests (mismo patrón de
+    seam explícito que storage_client en MissionExecutor/QuarantineStore,
+    en vez de parchear sys.modules) -- si se pasa, se usa tal cual en
+    lugar de importar el SDK real; nunca se usa por defecto en
+    producción."""
+
+    environment = os.environ if environ is None else environ
+    if str(environment.get("ENABLE_REAL_STORAGE", "")).strip().lower() != "true":
+        return None
+    module = storage_module
+    if module is None:
+        from google.cloud import storage as module  # import perezoso -- ver docstring
+    return module.Client()
+
+
+_QUARANTINE_STORE = QuarantineStore(_build_storage_client())
 
 
 class CloudDemoConfigurationError(Exception):

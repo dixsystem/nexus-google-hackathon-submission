@@ -248,3 +248,60 @@ real para `/redteam` en la sesión de despliegue, y con qué política de
 límite de cuota.
 
 ---
+
+## 2026-08-22 — PASO A (preparación de despliegue): cliente real de Cloud Storage detrás de ENABLE_REAL_STORAGE
+
+**Contexto:** la misión pedía conectar un `storage.Client()` real en
+`google_agentic_cloud_service.py`, activo solo con una variable de
+entorno explícita (nunca por defecto), y "aplicar el mismo patrón a
+`mission_executor.py` si no está ya conectado igual (revisa M-6
+primero)".
+
+**Decisión tomada (`google_agentic_cloud_service.py`):** se añadió
+`_build_storage_client(environ=None, *, storage_module=None)`. Devuelve
+`None` a menos que `ENABLE_REAL_STORAGE` esté presente en el entorno con
+valor `"true"` (tolerante a mayúsculas/minúsculas y espacios alrededor,
+p.ej. `"True"`, `" true"`; cualquier otro valor -- `"1"`, `"yes"`, vacío
+-- se trata como ausente). Solo en ese caso importa `google.cloud.storage`
+de forma perezosa (dentro de la función, nunca a nivel de módulo) y
+construye `storage.Client()`. El singleton módulo-nivel pasó de
+`QuarantineStore()` a `QuarantineStore(_build_storage_client())` -- sin
+la variable, el resultado es exactamente el mismo `None` de antes, así
+que el fallback in-memory no cambia. `storage_module=` es un punto de
+inyección explícito para tests (mismo estilo de seam que
+`storage_client` en `MissionExecutor`/`QuarantineStore`), en vez de
+parchear `sys.modules` -- evita depender de que el paquete
+`google-cloud-storage` esté instalado para poder testear la rama "flag
+activo" (no lo está en este entorno de desarrollo).
+
+**Decisión tomada (`mission_executor.py`): SIN CAMBIOS, deliberadamente.**
+Revisé M-6 primero, como pedía la instrucción: `MissionExecutor.__init__`
+ya exige `storage_client` explícito y lanza `MissionExecutorError` si es
+`None` -- nunca tuvo (ni debía tener) un default real que envolver detrás
+de un flag, esa es precisamente su disciplina ya documentada ("sin
+default real", ver docstring del módulo). Además, confirmé por grep que
+ningún módulo del repo fuera de tests instancia `MissionExecutor(...)`
+todavía -- no existe un entrypoint de producción propio donde insertar la
+construcción del cliente real. Añadir un `_build_storage_client()` sin un
+punto de uso real habría sido código muerto. Cuando exista un llamador
+real de `MissionExecutor` (fuera de esta sesión), ese llamador es quien
+debe inyectar el `storage.Client()` real -- el mismo
+`_build_storage_client()` de `google_agentic_cloud_service.py` sirve
+directamente para eso si se reutiliza tal cual.
+
+**Verificación:** suite `google-all-things-agentic-submission/cloud/`
+(`PYTHONPATH=engineering-loop python3 -m unittest
+test_google_agentic_cloud_service -v`) -- 32 tests, todos en verde (14
+nuevos: `BuildStorageClientTests`, cubriendo flag ausente, valores no
+exactamente `"true"`, tolerancia a mayúsculas/espacios, y construcción
+real del cliente fake sin red). Suite completa `engineering-loop/`
+(`python3 -m unittest discover tests -v`) -- 366 tests, mismos 2 errores
+preexistentes de antes de esta sesión (no relacionados, documentados en
+`SESSION_SUMMARY_2026-08-22.md`), sin regresiones nuevas.
+
+**Pendiente de revisión humana:** decidir, en la sesión de despliegue
+supervisada, si `ENABLE_REAL_STORAGE=true` se activa desde el primer
+`gcloud run deploy` o se deja para una iteración posterior tras verificar
+el servicio en modo in-memory primero.
+
+---
