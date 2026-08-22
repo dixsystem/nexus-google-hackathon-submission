@@ -98,6 +98,94 @@ class RedTeamOfflineFunctionTests(unittest.TestCase):
         self.assertEqual(subject.MAX_REDTEAM_ROUNDS, 15)
 
 
+class RedTeamRealModeFunctionTests(unittest.TestCase):
+    """M-7a paso 3 (sesión supervisada, modo real): ejercita
+    run_cloud_redteam_session(mode="real") con build_transport y
+    run_red_team_session mockeados a nivel de módulo -- nunca se levanta
+    el intérprete aislado real (.antigravity_isolated_venv) ni se gasta
+    cuota real de Gemini/Gemma en tests."""
+
+    def setUp(self):
+        subject._QUARANTINE_STORE = subject.QuarantineStore()
+
+    def tearDown(self):
+        subject._QUARANTINE_STORE = subject.QuarantineStore()
+
+    def test_real_mode_requires_gemini_model(self):
+        with self.assertRaises(subject.CloudDemoConfigurationError) as ctx:
+            subject.run_cloud_redteam_session(rounds=1, mode="real", environ={})
+        self.assertEqual(ctx.exception.category, "CONFIGURATION")
+
+    def test_real_mode_requires_gemini_api_key(self):
+        with self.assertRaises(subject.CloudDemoConfigurationError) as ctx:
+            subject.run_cloud_redteam_session(
+                rounds=1, mode="real", environ={"GEMINI_MODEL": "gemini-3.5-flash"}
+            )
+        self.assertEqual(ctx.exception.category, "CONFIGURATION")
+
+    def test_real_mode_hard_cap_is_lower_than_offline_hard_cap(self):
+        self.assertLess(subject.MAX_REDTEAM_ROUNDS_REAL, subject.MAX_REDTEAM_ROUNDS)
+        self.assertEqual(subject.MAX_REDTEAM_ROUNDS_REAL, 5)
+
+    def test_real_mode_rejects_rounds_above_its_own_hard_cap_even_with_full_config(self):
+        # rounds=6 sería válido en modo offline (cap 15) pero debe seguir
+        # rechazándose en modo real (cap 5), incluso con GEMINI_MODEL y
+        # GEMINI_API_KEY ya configurados -- la validación de rounds ocurre
+        # antes de intentar construir ningún transport.
+        with self.assertRaises(subject.CloudDemoConfigurationError):
+            subject.run_cloud_redteam_session(
+                rounds=subject.MAX_REDTEAM_ROUNDS_REAL + 1, mode="real",
+                environ={"GEMINI_MODEL": "gemini-3.5-flash", "GEMINI_API_KEY": "fake-key"},
+            )
+
+    def test_real_mode_rejects_unsupported_mode_value(self):
+        with self.assertRaises(subject.CloudDemoConfigurationError):
+            subject.run_cloud_redteam_session(rounds=1, mode="bogus", environ={})
+
+    def test_real_mode_wires_the_real_transport_for_attacker_and_lets_assessor_reuse_it(self):
+        fake_transport = object()
+        captured = {}
+
+        def fake_build_transport(mode, *, model_id, environ):
+            captured["build_transport_mode"] = mode
+            captured["build_transport_model_id"] = model_id
+            return fake_transport, model_id
+
+        fake_result = _fake_session_result(
+            session_id="sess-real", escalated_incident_ids=(), quarantine_report="",
+        )
+
+        def fake_run_red_team_session(goal, registry, transport, **kwargs):
+            captured["transport"] = transport
+            captured["rounds"] = kwargs.get("rounds")
+            captured["model_id"] = kwargs.get("model_id")
+            captured["use_gemma_fallback"] = kwargs.get("use_gemma_fallback")
+            # gemini_assessor no se pasa explícitamente desde
+            # run_cloud_redteam_session -- por diseño, run_red_team_session
+            # reutiliza el `transport` recibido (el mismo real) cuando
+            # gemini_assessor es None (ver docstring de red_team_session.py).
+            captured["gemini_assessor"] = kwargs.get("gemini_assessor")
+            captured["gemini_assessor_transport"] = kwargs.get("gemini_assessor_transport")
+            return fake_result
+
+        with mock.patch.object(subject, "build_transport", side_effect=fake_build_transport):
+            with mock.patch.object(subject, "run_red_team_session", side_effect=fake_run_red_team_session):
+                result = subject.run_cloud_redteam_session(
+                    rounds=2, mode="real",
+                    environ={"GEMINI_MODEL": "gemini-3.5-flash", "GEMINI_API_KEY": "fake-key"},
+                )
+
+        self.assertEqual(captured["build_transport_mode"], "real")
+        self.assertEqual(captured["build_transport_model_id"], "gemini-3.5-flash")
+        self.assertIs(captured["transport"], fake_transport)
+        self.assertEqual(captured["rounds"], 2)
+        self.assertTrue(captured["use_gemma_fallback"])
+        self.assertIsNone(captured["gemini_assessor"])
+        self.assertIsNone(captured["gemini_assessor_transport"])
+        self.assertEqual(result["status"], "COMPLETED")
+        self.assertEqual(result["mode"], "real")
+
+
 class RedTeamEndpointHTTPTests(unittest.TestCase):
     """POST /redteam -- siempre mockea run_cloud_redteam_session para
     probar el contrato HTTP (rutas, límite de rondas, fail-closed) sin
@@ -110,7 +198,7 @@ class RedTeamEndpointHTTPTests(unittest.TestCase):
                 status, payload = _http_request(f"{base_url}/redteam", method="POST")
         self.assertEqual(status, 200)
         self.assertEqual(payload["status"], "COMPLETED")
-        mocked.assert_called_once_with(rounds=subject.DEFAULT_REDTEAM_ROUNDS)
+        mocked.assert_called_once_with(rounds=subject.DEFAULT_REDTEAM_ROUNDS, mode=subject.DEFAULT_REDTEAM_MODE)
 
     def test_post_redteam_honors_rounds_in_body(self):
         with mock.patch.object(
@@ -119,7 +207,63 @@ class RedTeamEndpointHTTPTests(unittest.TestCase):
             with _running_server() as base_url:
                 status, _ = _http_request(f"{base_url}/redteam", method="POST", body={"rounds": 3})
         self.assertEqual(status, 200)
-        mocked.assert_called_once_with(rounds=3)
+        mocked.assert_called_once_with(rounds=3, mode=subject.DEFAULT_REDTEAM_MODE)
+
+    def test_post_redteam_honors_mode_in_body(self):
+        with mock.patch.object(
+            subject, "run_cloud_redteam_session", return_value={"status": "COMPLETED"}
+        ) as mocked:
+            with _running_server() as base_url:
+                status, _ = _http_request(
+                    f"{base_url}/redteam", method="POST", body={"mode": "real", "rounds": 2}
+                )
+        self.assertEqual(status, 200)
+        mocked.assert_called_once_with(rounds=2, mode="real")
+
+    def test_post_redteam_rejects_unsupported_mode_without_calling_orchestrator(self):
+        with mock.patch.object(subject, "run_cloud_redteam_session") as mocked:
+            with _running_server() as base_url:
+                status, payload = _http_request(f"{base_url}/redteam", method="POST", body={"mode": "bogus"})
+        self.assertEqual(status, 400)
+        self.assertEqual(payload["category"], "CONFIGURATION")
+        mocked.assert_not_called()
+
+    def test_post_redteam_rejects_rounds_above_real_hard_cap_without_calling_orchestrator(self):
+        # 6 rondas es válido en modo offline (cap 15) pero debe rechazarse
+        # con 400 en modo real (cap 5, MAX_REDTEAM_ROUNDS_REAL) -- la capa
+        # HTTP debe aplicar el mismo límite más bajo antes de invocar el
+        # orquestador, no solo la capa de función.
+        with mock.patch.object(subject, "run_cloud_redteam_session") as mocked:
+            with _running_server() as base_url:
+                status, payload = _http_request(
+                    f"{base_url}/redteam", method="POST",
+                    body={"mode": "real", "rounds": subject.MAX_REDTEAM_ROUNDS_REAL + 1},
+                )
+        self.assertEqual(status, 400)
+        self.assertEqual(payload["category"], "CONFIGURATION")
+        mocked.assert_not_called()
+
+    def test_post_redteam_accepts_real_mode_rounds_up_to_its_hard_cap(self):
+        with mock.patch.object(
+            subject, "run_cloud_redteam_session", return_value={"status": "COMPLETED"}
+        ) as mocked:
+            with _running_server() as base_url:
+                status, _ = _http_request(
+                    f"{base_url}/redteam", method="POST",
+                    body={"mode": "real", "rounds": subject.MAX_REDTEAM_ROUNDS_REAL},
+                )
+        self.assertEqual(status, 200)
+        mocked.assert_called_once_with(rounds=subject.MAX_REDTEAM_ROUNDS_REAL, mode="real")
+
+    def test_post_redteam_fails_closed_with_configuration_category_when_gemini_api_key_missing_in_real_mode(self):
+        # Integración de extremo a extremo del requisito de fallo cerrado:
+        # sin mockear run_cloud_redteam_session, solo el entorno del
+        # proceso (sin GEMINI_API_KEY) -- nunca llega a build_transport.
+        with mock.patch.dict("os.environ", {"GEMINI_MODEL": "gemini-3.5-flash"}, clear=True):
+            with _running_server() as base_url:
+                status, payload = _http_request(f"{base_url}/redteam", method="POST", body={"mode": "real"})
+        self.assertEqual(status, 503)
+        self.assertEqual(payload["category"], "CONFIGURATION")
 
     def test_post_redteam_rejects_rounds_above_hard_cap_without_calling_orchestrator(self):
         with mock.patch.object(subject, "run_cloud_redteam_session") as mocked:

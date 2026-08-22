@@ -28,6 +28,14 @@ DEFAULT_REDTEAM_ROUNDS = 5
 # de pedir más rondas se rechaza con 400, nunca se recorta en silencio.
 MAX_REDTEAM_ROUNDS = 15
 
+DEFAULT_REDTEAM_MODE = "offline"
+# M-7a paso 3 (sesión supervisada, modo real): límite más bajo que
+# MAX_REDTEAM_ROUNDS porque cada ronda en modo "real" gasta al menos 2
+# llamadas reales de cuota (ataque de red_team_attacker.py +
+# gemini_assess_attack() si el intento es bloqueado) -- ver
+# DEPLOYMENT_CHECKLIST.md.
+MAX_REDTEAM_ROUNDS_REAL = 5
+
 # M-7a paso 2 (sesión supervisada, persistencia real): un único bucket
 # compartido, no un bucket por sesión como mission_executor.py (M-6) usa
 # para ejecuciones ALLOW. Los informes de cuarentena son un log de
@@ -136,7 +144,14 @@ _QUARANTINE_STORE = QuarantineStore(_build_storage_client())
 
 
 class CloudDemoConfigurationError(Exception):
-    pass
+    # Todo raise de esta clase en el módulo es, sin excepción, un fallo de
+    # validación/configuración (rounds fuera de rango, body malformado,
+    # modo no soportado, GEMINI_MODEL/GEMINI_API_KEY ausentes en modo
+    # real) -- nunca un fallo del pipeline en sí. category expuesto como
+    # atributo de clase para que _handle_redteam/_handle_demo (que hacen
+    # getattr(exc, "category", ...)) reporten "CONFIGURATION" sin tener
+    # que repetir el valor en cada punto de raise.
+    category = "CONFIGURATION"
 
 
 class _RecordingProvider:
@@ -209,19 +224,50 @@ def run_cloud_demo(*, mode: str, environ=None):
     }
 
 
-def run_cloud_redteam_session(*, rounds: int = DEFAULT_REDTEAM_ROUNDS, environ=None) -> dict:
-    """Ejecuta una sesión red-team completa (M-9: red_team_session.py) en
-    modo offline/determinista -- ver NIGHT_QUESTIONS.md, entrada M-7a, sobre
-    por qué esta fase de código-únicamente-sin-desplegar no cablea un modo
-    "real" contra Gemini vivo (necesitaría un segundo transport aislado
-    para Gemma, además del del atacante). use_gemma_fallback=True evita esa
-    necesidad por completo -- ninguna llamada de red real ocurre aquí."""
+def run_cloud_redteam_session(
+    *, rounds: int = DEFAULT_REDTEAM_ROUNDS, mode: str = DEFAULT_REDTEAM_MODE, environ=None
+) -> dict:
+    """Ejecuta una sesión red-team completa (M-9: red_team_session.py).
 
-    if isinstance(rounds, bool) or not isinstance(rounds, int) or rounds < 1 or rounds > MAX_REDTEAM_ROUNDS:
-        raise CloudDemoConfigurationError(f"rounds must be an integer between 1 and {MAX_REDTEAM_ROUNDS}")
+    mode="offline" (default): backend determinista local, ninguna llamada
+    de red real ocurre -- ver NIGHT_QUESTIONS.md, entrada M-7a original.
+
+    mode="real" (M-7a paso 3, sesión supervisada): el ATACANTE
+    (red_team_attacker.py) usa build_transport("real", ...) igual patrón
+    que run_cloud_demo(mode="real") -- requiere GEMINI_MODEL y
+    GEMINI_API_KEY en el entorno, falla cerrado (CloudDemoConfigurationError,
+    category=CONFIGURATION) si falta cualquiera de los dos, antes de tocar
+    build_transport. gemini_assessor NO se pasa explícitamente aquí -- por
+    diseño de run_red_team_session(), cuando gemini_assessor es None
+    reutiliza automáticamente el mismo `transport` que el atacante (ver
+    docstring de run_red_team_session, gemini_assessor_transport), así que
+    el modo real ya cablea el transport correcto para ambos sin construir
+    un segundo transport. use_gemma_fallback sigue en True incluso en modo
+    real -- Gemma se queda en clasificación por reglas (sin llamada real)
+    para no requerir un tercer transport aislado; el límite de
+    MAX_REDTEAM_ROUNDS_REAL asume exactamente 2 llamadas reales por ronda
+    bloqueada (ataque + gemini_assessor), no 3."""
+
+    if mode not in ("offline", "real"):
+        raise CloudDemoConfigurationError("mode must be offline or real")
+
+    max_rounds = MAX_REDTEAM_ROUNDS_REAL if mode == "real" else MAX_REDTEAM_ROUNDS
+    if isinstance(rounds, bool) or not isinstance(rounds, int) or rounds < 1 or rounds > max_rounds:
+        raise CloudDemoConfigurationError(f"rounds must be an integer between 1 and {max_rounds}")
 
     environment = os.environ if environ is None else environ
-    transport, selected_model = build_transport("offline", model_id=None, environ=environment)
+
+    if mode == "real":
+        model_id = environment.get("GEMINI_MODEL")
+        if not isinstance(model_id, str) or not model_id:
+            raise CloudDemoConfigurationError("real mode requires GEMINI_MODEL")
+        api_key = environment.get("GEMINI_API_KEY")
+        if not isinstance(api_key, str) or not api_key:
+            raise CloudDemoConfigurationError("real mode requires GEMINI_API_KEY")
+    else:
+        model_id = None
+
+    transport, selected_model = build_transport(mode, model_id=model_id, environ=environment)
     registry = default_provider_capability_registry()
     result = run_red_team_session(
         _REDTEAM_GOAL, registry, transport, rounds=rounds,
@@ -239,6 +285,7 @@ def run_cloud_redteam_session(*, rounds: int = DEFAULT_REDTEAM_ROUNDS, environ=N
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "status": "COMPLETED",
         "session_id": result.session_id,
+        "mode": mode,
         "rounds": rounds,
         "incident_count": len(result.incidents),
         "validation_bypass_count": len(result.validation_bypasses),
@@ -306,7 +353,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         self._json(200, result)
 
-    def _read_redteam_rounds(self):
+    def _read_redteam_request(self):
         length_header = self.headers.get("Content-Length", "0") or "0"
         try:
             length = int(length_header)
@@ -314,27 +361,31 @@ class Handler(BaseHTTPRequestHandler):
             raise CloudDemoConfigurationError("invalid Content-Length") from exc
         body = self.rfile.read(length) if length > 0 else b""
         if not body:
-            return DEFAULT_REDTEAM_ROUNDS
+            return DEFAULT_REDTEAM_ROUNDS, DEFAULT_REDTEAM_MODE
         try:
             payload = json.loads(body.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise CloudDemoConfigurationError("request body must be valid JSON") from exc
         if not isinstance(payload, dict):
             raise CloudDemoConfigurationError("request body must be a JSON object")
+        mode = payload.get("mode", DEFAULT_REDTEAM_MODE)
+        if mode not in ("offline", "real"):
+            raise CloudDemoConfigurationError("mode must be offline or real")
+        max_rounds = MAX_REDTEAM_ROUNDS_REAL if mode == "real" else MAX_REDTEAM_ROUNDS
         rounds = payload.get("rounds", DEFAULT_REDTEAM_ROUNDS)
-        if isinstance(rounds, bool) or not isinstance(rounds, int) or rounds < 1 or rounds > MAX_REDTEAM_ROUNDS:
-            raise CloudDemoConfigurationError(f"rounds must be an integer between 1 and {MAX_REDTEAM_ROUNDS}")
-        return rounds
+        if isinstance(rounds, bool) or not isinstance(rounds, int) or rounds < 1 or rounds > max_rounds:
+            raise CloudDemoConfigurationError(f"rounds must be an integer between 1 and {max_rounds}")
+        return rounds, mode
 
     def _handle_redteam(self):
         try:
-            rounds = self._read_redteam_rounds()
+            rounds, mode = self._read_redteam_request()
         except CloudDemoConfigurationError:
             # fail closed without leaking SDK diagnostics -- same discipline as _handle_demo
             self._json(400, {"status": "FAILED", "category": "CONFIGURATION", "authority_effects": "NONE"})
             return
         try:
-            result = run_cloud_redteam_session(rounds=rounds)
+            result = run_cloud_redteam_session(rounds=rounds, mode=mode)
         except Exception as exc:  # fail closed without leaking SDK diagnostics
             category = getattr(exc, "category", "REDTEAM_FAILED")
             self._json(503, {"status": "FAILED", "category": category, "authority_effects": "NONE"})

@@ -350,3 +350,102 @@ esta verificación. Ningún `gcloud`, ningún Cloud Run, ninguna cuota real
 tocada.
 
 ---
+
+## 2026-08-22 — PASO 3 (sesión supervisada, modo real): POST /redteam ya soporta mode="real"
+
+**Contexto:** la entrada anterior ("M-7a: POST /redteam corre siempre en
+modo offline/determinista") queda desactualizada por esta misión --
+`/redteam` ahora acepta un `mode` opcional en el body JSON (`"offline"`
+por defecto, sin cambios de comportamiento; `"real"` para que el
+atacante use Gemini vivo). Mismo patrón exacto que `run_cloud_demo`
+ya usa para `mode="real"`: `build_transport("real", model_id=GEMINI_MODEL,
+...)`, y falla cerrado si `GEMINI_MODEL` o `GEMINI_API_KEY` no están en
+el entorno.
+
+**Decisión tomada:**
+1. `MAX_REDTEAM_ROUNDS_REAL = 5` (nueva constante, más bajo que
+   `MAX_REDTEAM_ROUNDS = 15` de modo offline) -- validado tanto en la capa
+   HTTP (`Handler._read_redteam_request`) como en la capa de función
+   (`run_cloud_redteam_session`), mismo patrón de doble validación que ya
+   existía para el límite offline.
+2. `CloudDemoConfigurationError` ganó un atributo de clase
+   `category = "CONFIGURATION"` -- antes no tenía `.category`, así que el
+   `getattr(exc, "category", "REDTEAM_FAILED")` de `_handle_redteam`
+   nunca reportaba `"CONFIGURATION"` para un fallo de configuración real
+   (p.ej. `GEMINI_API_KEY` ausente), solo para el body malformado (ese
+   caso ya estaba hardcodeado en el handler). Es un cambio seguro: cada
+   uno de los `raise CloudDemoConfigurationError(...)` existentes en el
+   módulo (rounds fuera de rango, modo no soportado, `GEMINI_MODEL`/
+   `GEMINI_API_KEY` ausentes, body malformado) es, sin excepción, un
+   fallo de configuración/validación -- nunca un fallo del pipeline en
+   sí -- así que darle `category="CONFIGURATION"` a la clase entera es
+   correcto para todos sus usos, no solo el nuevo.
+3. `gemini_assessor` **no se pasa explícitamente** desde
+   `run_cloud_redteam_session` en modo real -- se deja en su default
+   (`None`). Por diseño ya existente de `run_red_team_session()` (ver
+   `gemini_assessor_transport` en su docstring), cuando `gemini_assessor`
+   es `None` reutiliza automáticamente el mismo objeto `transport` que
+   recibió el atacante. Como en modo real ese `transport` YA es el real
+   (construido una sola vez por `build_transport("real", ...)`), el
+   evaluador queda cableado al transport correcto sin construir un
+   segundo transport aislado -- exactamente lo que pedía la instrucción
+   ("ya construido, solo hay que pasarle el transport correcto").
+   `use_gemma_fallback=True` se mantiene también en modo real (Gemma
+   sigue en clasificación por reglas, sin llamada real) -- así el coste
+   máximo por ronda bloqueada en modo real es exactamente 2 llamadas
+   reales (ataque + `gemini_assessor`), no 3, tal como especificaba la
+   instrucción.
+
+**Hallazgo no pedido, documentado en vez de corregido (fuera de alcance
+de esta misión):** el docstring de `run_red_team_session()`
+(`gemini_assessor`, en `red_team_session.py`) dice textualmente "Si es
+None (default), CADA incidente bloqueado dispara una llamada real a
+Gemini vía gemini_assess_attack() -- ver NIGHT_QUESTIONS.md, entrada de
+la sesión supervisada de hoy, para el porqué de este cambio de default
+(antes fijo en 'UNKNOWN', ver Contexto C de 2026-08-22)". Ese cambio de
+default (de `"UNKNOWN"` fijo a disparar `gemini_assess_attack()` con el
+`transport` recibido) ya está en el código, comiteado en `4bd66e1`
+("gemini_assessor real (M-9 wiring)..."), ANTES del inicio de esta
+sesión -- pero la entrada de `NIGHT_QUESTIONS.md` que el docstring dice
+que existe ("entrada de la sesión supervisada de hoy") no está en este
+archivo; el `Contexto C` de la sección `M-9/M-7a` (línea ~185) sigue
+describiendo la decisión ORIGINAL ya revertida ("UNKNOWN" fijo por
+defecto), sin nota de que fue superada. No toqué ese código ni intenté
+reconstruir la razón original que no documenté yo -- solo dejo constancia
+del hueco para que quien revise pueda decidir si hace falta escribir esa
+entrada retroactivamente. Es relevante para esta misión porque mi
+decisión del punto 3 de arriba depende exactamente de ese comportamiento
+ya existente (reutilizar `transport` por defecto), así que si algún día
+se "corrige" ese default de vuelta a `"UNKNOWN"` fijo, el modo real de
+`/redteam` dejaría de evaluar con Gemini real sin que ningún test de
+este archivo lo capture explícitamente (los tests nuevos de esta misión
+verifican que `gemini_assessor`/`gemini_assessor_transport` NO se pasan
+explícitamente, es decir, que se deja en manos del default -- no
+verifican cuál es ese default, porque eso vive en `red_team_session.py`,
+fuera del alcance de este archivo).
+
+**Verificación:** suite `google-all-things-agentic-submission/cloud/`
+(`PYTHONPATH=engineering-loop python3 -m unittest
+test_google_agentic_cloud_service -v`) -- 43 tests, todos en verde (11
+nuevos: `RedTeamRealModeFunctionTests` con `build_transport` y
+`run_red_team_session` mockeados a nivel de módulo -- nunca se levanta
+el intérprete aislado real ni se gasta cuota real en tests -- más nuevos
+casos en `RedTeamEndpointHTTPTests` para `mode` en el body, límite de 5
+rondas en modo real en la capa HTTP, y fallo cerrado end-to-end con
+`GEMINI_API_KEY` ausente del proceso real vía `mock.patch.dict("os.environ",
+..., clear=True)`). Suite completa `engineering-loop/` (`python3 -m
+unittest discover tests`) -- 366 tests, mismos 2 errores preexistentes de
+siempre (`test_real_transport_uses_isolated_google_sdk_interpreter`,
+`test_provider_capability_registry`), sin regresiones nuevas. Ningún
+`gcloud`, ninguna cuota real de Gemini/Gemma/Lyria gastada -- todo el
+código de modo real se ejercitó exclusivamente con transports/funciones
+mockeadas.
+
+**Pendiente de revisión humana:** decidir si se escribe la entrada de
+`NIGHT_QUESTIONS.md` que el docstring de `gemini_assessor` en
+`red_team_session.py` dice que debería existir (ver hallazgo de arriba);
+y, como ya estaba pendiente desde la entrada M-7a original, confirmar el
+`model_id` real de Gemini a usar en producción antes de activar
+`mode="real"` contra el servicio desplegado.
+
+---
