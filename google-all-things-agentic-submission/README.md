@@ -95,14 +95,23 @@ consolidated into a quarantine report. Nothing here ever executes a mission;
 `mission_executor.py` (M-6) requires a separate, explicit human `ALLOW`
 this module never generates.
 
-This phase (M-9) only wires the deterministic **offline** path end to end —
+The library call below runs the deterministic **offline** path end to end —
 same isolated-child mechanism as `--mode offline` above, no real Gemini
 quota spent. Because the offline backend always returns the same fixed,
 well-formed candidate regardless of the attack prompt, every round in this
 mode is reported as `VALIDATION_BYPASS` (never executed) rather than a
-genuine finding — this proves the wiring, not an actual red-team result. A
-`--mode real` equivalent for this runner is deferred to the supervised
-session (see `NIGHT_QUESTIONS.md`, entry dated 2026-08-22).
+genuine finding — this proves the wiring, not an actual red-team result.
+
+At the HTTP layer (`POST /redteam`, M-7a, code-complete but **not yet
+deployed** to the live service — see "Deployed Cloud Run service" below), a
+`"mode": "real"` option now exists: the attacker (and its Gemini
+self-assessor, reusing the same transport) call live Gemini instead, with a
+lower hard round cap of 5 (`MAX_REDTEAM_ROUNDS_REAL`) instead of the 15 used
+by offline mode, since each blocked round in real mode spends up to 2 real
+quota calls. See `DEPLOYMENT_CHECKLIST.md` §1.1 for the request shape and
+`NIGHT_QUESTIONS.md`, entry dated 2026-08-22 ("PASO 3"), for the design
+decisions. The library call below stays offline-only, for credential-free
+reproducibility.
 
 From the repository root:
 
