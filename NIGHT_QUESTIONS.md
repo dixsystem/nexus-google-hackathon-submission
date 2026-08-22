@@ -160,3 +160,54 @@ real en ningún momento de esta sesión.
 de Lyria antes de cablear un transport real en producción.
 
 ---
+
+## 2026-08-22 — M-9/M-7a: reordenado, firma de run_red_team_session, y origen de gemini_assessment
+
+**Contexto A (reordenado M-7a/M-9):** la tarea pedía ejecutar "M-7a, M-9,
+M-10, M-11" en ese orden, pero M-7a dice explícitamente "reutilizando el
+orquestador que construirás en M-9" -- M-7a depende de un módulo que
+todavía no existe si se sigue el orden literal. **Decisión:** construí
+M-9 primero (el orquestador), luego M-7a (los endpoints HTTP que lo
+llaman). Es la única secuencia que no requiere escribir código contra un
+módulo inexistente.
+
+**Contexto B (firma de run_red_team_session):** la misión especifica
+`run_red_team_session(goal, registry, transport, rounds=5,
+session_id=None)` -- sin ningún parámetro de model_id para el atacante
+Gemini. `RedTeamAttacker` (M-1) exige `model_id` explícito sin default
+("sin default deliberado", misma disciplina que `AntigravityGeminiConfig`)
+-- inventar un model_id de Gemini aquí para no romper la firma literal
+violaría esa disciplina ya establecida en toda la sesión. **Decisión:**
+añadí `model_id` como parámetro keyword-only OBLIGATORIO (sin default),
+extendiendo la firma en vez de violarla; los primeros 5 parámetros
+posicionales coinciden exactamente con el enunciado.
+
+**Contexto C (origen de gemini_assessment dentro del orquestador):** M-5
+(anoche) ya documentó que `gemini_assessment` viene de "una llamada
+SEPARADA a Gemini" pero que esa llamada real "queda fuera de esta
+misión". M-9 SÍ necesita alimentar `evaluate_consensus()` con algo, y el
+enunciado de M-9 no aclara si esa llamada separada debe implementarse
+ahora. Regla dura de la sesión: "NO gastes cuota real... salvo lo
+estrictamente necesario". **Decisión:** por defecto,
+`run_red_team_session()` NUNCA hace esa tercera llamada real -- usa
+`gemini_assessment="UNKNOWN"` para todo incidente (lo cual, por la regla
+ya resuelta de M-5, siempre produce NO_CONSENSUS a menos que se inyecte
+otra cosa). Añadí un parámetro opcional `gemini_assessor` (callable
+inyectable, `Callable[[RedTeamIncident], str]`) para que un llamador que
+sí quiera esa evaluación real (o un test que quiera forzar un escenario
+ESCALATE) pueda suministrarla explícitamente, sin que el módulo la fuerce
+por defecto.
+
+**Por qué es segura:** ninguna de las tres decisiones afecta gobernanza o
+ejecución -- son decisiones de firma/composición de módulos ya
+existentes y no modificados. `run_red_team_session()` nunca invoca
+`mission_executor.py` (M-6): un intento que pasa TODA la validación se
+marca como `VALIDATION_BYPASS` y se reporta, nunca se ejecuta
+automáticamente -- ver docstring de `red_team_session.py`.
+
+**Pendiente de revisión humana:** confirmar el `model_id` real de Gemini
+a usar en producción para el atacante (mismo pendiente ya documentado
+para Gemma/Lyria), y si se desea implementar la llamada real de
+`gemini_assessor` antes de exponer `/redteam` en producción.
+
+---
