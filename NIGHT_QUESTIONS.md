@@ -305,3 +305,48 @@ supervisada, si `ENABLE_REAL_STORAGE=true` se activa desde el primer
 el servicio en modo in-memory primero.
 
 ---
+
+## 2026-08-22 — PASO B: Dockerfile faltaba mission_executor.py y lyria_alert_sound.py; copia bajo cloud/ estaba obsoleta
+
+**Contexto:** la misión pedía verificar que el `Dockerfile` de la raíz
+(el que usa `gcloud run deploy --source=.`) incluye los 8 módulos del
+Red Team, y añadir el que faltara con el mismo patrón `COPY`.
+
+**Decisión tomada:** faltaban dos de los ocho: `mission_executor.py` y
+`lyria_alert_sound.py` (ninguno de los dos es importado hoy por
+`google_agentic_cloud_service.py` ni por su cadena de imports real --
+confirmado por grep, ver entrada PASO A de más arriba sobre
+`mission_executor.py` -- pero la instrucción los pedía explícitamente por
+nombre para dejar la imagen lista de cara al despliegue supervisado, así
+que se añadieron ambos con el mismo patrón `COPY engineering-loop/<archivo>.py /app/`).
+
+**Hallazgo adicional no pedido explícitamente, corregido de forma
+conservadora:** al revisar el Dockerfile de la raíz descubrí que existe
+una segunda copia en
+`google-all-things-agentic-submission/cloud/Dockerfile`, que el propio
+`README.md` describe como "copia" mantenida en sync ("A root-level
+Dockerfile (copy of .../cloud/Dockerfile) is committed so gcloud run
+deploy --source=. finds it without extra flags"). Esa copia estaba
+desincronizada desde antes de esta sesión: le faltaban TODOS los módulos
+de red-team (M-7a completo), no solo los dos de hoy. No la usa
+`gcloud run deploy --source=.` (que toma el Dockerfile de la raíz), pero
+dejarla así habría sido una trampa para cualquiera que la edite pensando
+que es la real. Se sincronizó byte a byte con la de la raíz.
+
+**Verificación:** `docker build -t nexus-redteam-predeploy-check -f
+Dockerfile .` desde la raíz del repo -- build completo, exit code 0, sin
+errores en ningún paso `COPY` ni en la instalación de dependencias
+(`google-cloud-storage==3.13.1` ya en requirements.txt desde M-6, más
+`google-genai==2.18.1` en el venv aislado). Además de la verificación de
+build pedida, hice un smoke test local adicional no destructivo:
+`docker run` de la imagen en el puerto efímero 18080 de loopback (no
+Cloud Run, no gcloud, no red externa) y golpeé `/health`, `POST
+/demo/offline` y `POST /redteam` (rounds=1, modo offline/determinista) --
+los tres respondieron 200 sin error de import, confirmando que la cadena
+de imports real (no solo la copia de archivos) funciona dentro de la
+imagen. Contenedor e imagen de prueba eliminados inmediatamente después
+(`docker stop/rm/rmi`) -- no queda ningún recurso local persistente de
+esta verificación. Ningún `gcloud`, ningún Cloud Run, ninguna cuota real
+tocada.
+
+---

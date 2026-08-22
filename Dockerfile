@@ -19,6 +19,7 @@ COPY engineering-loop/antigravity_transport_protocol.py /app/
 COPY engineering-loop/google_agentic_demo.py /app/
 COPY engineering-loop/m031_llm_execution_adapter.py /app/
 COPY engineering-loop/mission_execution_contracts.py /app/
+COPY engineering-loop/mission_executor.py /app/
 COPY engineering-loop/mission_generator_candidates.py /app/
 COPY engineering-loop/mission_generator_llm_producer.py /app/
 COPY engineering-loop/mission_proposal_staging.py /app/
@@ -27,6 +28,7 @@ COPY engineering-loop/provider_capability_registry.py /app/
 COPY engineering-loop/consensus_gate.py /app/
 COPY engineering-loop/gemma_severity_classifier.py /app/
 COPY engineering-loop/quarantine_report_generator.py /app/
+COPY engineering-loop/lyria_alert_sound.py /app/
 COPY engineering-loop/red_team_attacker.py /app/
 COPY engineering-loop/red_team_incident.py /app/
 COPY engineering-loop/red_team_session.py /app/
