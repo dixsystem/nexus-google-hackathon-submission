@@ -8,12 +8,11 @@
 # GEMINI real (mode real / mode=real) y gastan cuota real de
 # Gemini/Gemma. rounds=2 en /redteam es deliberado para acotar ese gasto.
 #
-# NOTA (ver NIGHT_QUESTIONS.md, entrada "PASO 1" de 2026-08-22): a fecha de
-# creación de este script, /redteam TODAVIA NO estaba desplegado en el
-# servicio en vivo (solo /health, /demo y /demo/offline lo estaban). Un
-# HTTP 404 en el paso de /redteam de abajo puede significar simplemente eso
-# -- no asumas que es un fallo del código sin comprobar primero si ya se
-# desplegó el Red Team.
+# NOTA (ver NIGHT_QUESTIONS.md, entrada "PASO 1 corrección (v2)" de
+# 2026-08-22): /redteam SI esta desplegado y verificado en el servicio en
+# vivo (confirmado con una llamada real exitosa, modo offline). Un HTTP 404
+# en el paso de /redteam de abajo indicaria una regresion real, no un
+# estado esperado -- investigalo.
 
 set -eu -o pipefail
 

@@ -102,13 +102,13 @@ well-formed candidate regardless of the attack prompt, every round in this
 mode is reported as `VALIDATION_BYPASS` (never executed) rather than a
 genuine finding — this proves the wiring, not an actual red-team result.
 
-At the HTTP layer (`POST /redteam`, M-7a, code-complete but **not yet
-deployed** to the live service — see "Deployed Cloud Run service" below), a
-`"mode": "real"` option now exists: the attacker (and its Gemini
-self-assessor, reusing the same transport) call live Gemini instead, with a
-lower hard round cap of 5 (`MAX_REDTEAM_ROUNDS_REAL`) instead of the 15 used
-by offline mode, since each blocked round in real mode spends up to 2 real
-quota calls. See `DEPLOYMENT_CHECKLIST.md` §1.1 for the request shape and
+At the HTTP layer (`POST /redteam`, M-7a — deployed and verified live, see
+"Deployed Cloud Run service" below), a `"mode": "real"` option now exists:
+the attacker (and its Gemini self-assessor, reusing the same transport)
+call live Gemini instead, with a lower hard round cap of 5
+(`MAX_REDTEAM_ROUNDS_REAL`) instead of the 15 used by offline mode, since
+each blocked round in real mode spends up to 2 real quota calls. See
+`DEPLOYMENT_CHECKLIST.md` §1.1 for the request shape and
 `NIGHT_QUESTIONS.md`, entry dated 2026-08-22 ("PASO 3"), for the design
 decisions. The library call below stays offline-only, for credential-free
 reproducibility.
@@ -135,9 +135,9 @@ print(result.quarantine_report)
 PY
 ```
 
-`rounds` has no ceiling in this library call — the hard cap of 15 is
-enforced only at the `POST /redteam` HTTP layer (M-7a), which also is not
-yet deployed; see the "PENDIENTE" placeholder below.
+`rounds` has no ceiling in this library call — the hard cap of 15
+(offline) / 5 (real) is enforced only at the deployed `POST /redteam`
+HTTP layer (M-7a); see "Deployed Cloud Run service" below.
 
 ## Staging output
 
@@ -181,10 +181,19 @@ Health check: curl https://nexus-google-agentic-demo-775963240525.us-central1.ru
 Offline demo: curl -X POST https://nexus-google-agentic-demo-775963240525.us-central1.run.app/demo/offline
 Real demo: curl -X POST https://nexus-google-agentic-demo-775963240525.us-central1.run.app/demo
 
-Red team session (M-7a): [PENDIENTE: URL tras despliegue supervisado] —
-code-complete (`POST /redteam`, `GET /quarantine/<incident_id>`), not
-deployed as part of this work. See "Run a red team session locally" above
-for the equivalent local command.
+Red team session (M-7a): deployed on the same live service as above.
+
+```
+curl -X POST https://nexus-google-agentic-demo-775963240525.us-central1.run.app/redteam
+curl -X POST https://nexus-google-agentic-demo-775963240525.us-central1.run.app/redteam -d '{"mode":"real","rounds":2}'
+curl https://nexus-google-agentic-demo-775963240525.us-central1.run.app/quarantine/<incident_id>
+```
+
+Verified live (offline mode, no quota spent) with a real `HTTP 200`,
+`status=COMPLETED` response — see `NIGHT_QUESTIONS.md`, entry dated
+2026-08-22 ("PASO 1 corrección (v2)"), for the raw evidence. See "Run a red
+team session locally" above for the equivalent local, credential-free
+command.
 
 Redeploy from a clean checkout:
 1. git clone https://github.com/dixsystem/nexus-google-hackathon-submission.git

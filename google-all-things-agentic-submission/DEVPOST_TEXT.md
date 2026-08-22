@@ -81,17 +81,13 @@ even an attempt that survives every existing validation layer is recorded as
 `VALIDATION_BYPASS` and reported, never run. The module supports a
 deterministic offline mode, reproducible without credentials, and an
 explicit real-Gemini attack mode with a hard per-session round cap to bound
-cost. Code-complete and tested; deploying its HTTP surface to the live Cloud
-Run service is a deliberate next step, held back from this submission
-pending a supervised deployment session (see "What's next").
+cost. Its HTTP surface (`POST /redteam`, `GET /quarantine/<incident_id>`) is
+deployed and verified on the same live Cloud Run service as the core demo.
 
 ## What's next
 
-The core demo boundary is already deployed and verified on Cloud Run. The
-immediate next step is deploying the red team module's HTTP surface
-(`POST /redteam`, `GET /quarantine/<incident_id>`) to that same service —
-code-complete and tested, deliberately held back from this submission
-pending a supervised deployment session. Longer term, we want portable
+The core demo boundary and the red team module's HTTP surface are both
+deployed and verified live on Cloud Run. Longer term, we want portable
 evidence bundles, stronger independent verification, and policy-aware
 integrations for more agent runtimes—without ever allowing a producer to
 silently expand its own authority.

@@ -69,7 +69,7 @@ flowchart LR
 | M-4 | `quarantine_report_generator.py` | Renders the consolidated Markdown report for `ESCALATE` incidents only, including a template-built "PROMPT PARA KEEPER" corrective block per incident. Always states explicitly that Nexus applied no change and the recommendation needs human approval. |
 | M-9 | `red_team_session.py` | Orchestrates M-1 through M-4 across N rounds without duplicating any of their logic (`run_red_team_session`). If an attempt survives the entire existing validation path — a real finding, not a simulated one — it is marked `VALIDATION_BYPASS` and reported, **never executed**. |
 | M-6 | `mission_executor.py` | The only module in this repo that produces a real external effect (a Cloud Storage bucket per approved mission). Requires a pre-existing `AllowDecision`, cryptographically bound to the exact mission content — it never generates that decision itself, and a `VALIDATION_BYPASS` from M-9 is never wired to it automatically. |
-| M-7a | `google_agentic_cloud_service.py` | `POST /redteam` and `GET /quarantine/<incident_id>` — HTTP surface for the above, code-complete but **not deployed** as part of this work; see the root README for the placeholder Cloud Run URL. |
+| M-7a | `google_agentic_cloud_service.py` | `POST /redteam` and `GET /quarantine/<incident_id>` — HTTP surface for the above, deployed and verified live on the same Cloud Run service as the core demo; see the README's "Deployed Cloud Run service" section. |
 
 **Authority boundary, extended:** an `ESCALATE` from the red team module is a
 *notification*, never an action. `VALIDATION_BYPASS` is the module's most

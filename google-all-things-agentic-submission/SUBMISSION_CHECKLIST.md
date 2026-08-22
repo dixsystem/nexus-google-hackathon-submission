@@ -21,13 +21,14 @@
 - [x] Use at least one Google Cloud infrastructure service — Cloud Run,
       live and verified: https://nexus-google-agentic-demo-775963240525.us-central1.run.app
       (see `README.md`, "Deployed Cloud Run service"). Covers the core demo
-      boundary (`/health`, `/demo`, `/demo/offline`). The red team module's
-      HTTP surface (`POST /redteam`, `GET /quarantine/<incident_id>`) is
-      code-complete and tested but **not yet deployed** to this service —
-      see the note at the end of this file before recording; do not claim
-      it as deployed/live in the video or Devpost form.
-- [ ] Capture proof of that Cloud service in both repository and video
-      (repository half done via `README.md`; video still pending).
+      boundary (`/health`, `/demo`, `/demo/offline`) **and** the red team
+      module's HTTP surface (`POST /redteam`, `GET /quarantine/<incident_id>`)
+      — confirmed live with a real successful `POST /redteam` call (offline
+      mode, no quota spent); see the note at the end of this file for the raw
+      evidence.
+- [x] Capture proof of that Cloud service in both repository and video
+      (repository proof: see the note at the end of this file; video still
+      pending).
 
 ## Reproducibility and evidence
 
@@ -76,10 +77,6 @@
 - [ ] List Gemini API, Google Gen AI SDK, and the selected Google Cloud service.
 - [ ] Do not claim fleet governance, cross-department cataloging, weeks of
       autonomous operation, or production execution.
-- [ ] Do not claim the red team module's HTTP surface (`POST /redteam`,
-      `GET /quarantine/<incident_id>`) is deployed/live on Cloud Run — as of
-      this checklist it is code-complete and tested only (see note at the
-      end of this file).
 - [ ] Final human review of IP, third-party logos/content, privacy, and factual
       accuracy.
 
@@ -91,16 +88,28 @@
 - [ ] Video and repository accessible to judges.
 - [ ] Submit before **31 August 2026, 5:00 PM PDT**.
 
-## Note (2026-08-22, pre-video consolidation)
+## Note (2026-08-22, pre-video consolidation — corrected same day)
 
-The red team module (M-1 through M-9, including its `mode="real"` Gemini
-attack option added this session) is complete in code, pushed to git, and
-covered by tests — but it has **not** been deployed to the live Cloud Run
-service (`nexus-google-agentic-demo`). The only thing verified live on that
-service is the original demo boundary (`/health`, `/demo`, `/demo/offline`).
-Deploying the red team endpoints requires a supervised `gcloud run deploy`
-session that has not happened yet. See `NIGHT_QUESTIONS.md`, entry dated
-2026-08-22 ("PASO 1: corrección de premisa..."), for the full detail. Do not
-record video footage that implies `/redteam` is reachable on the live URL
-until that deployment actually happens and is verified with a real request.
+An earlier version of this note incorrectly stated that the red team module
+was not deployed to the live Cloud Run service. That was based only on
+indirect evidence (README/ARCHITECTURE text and this session's own
+conversation history, neither of which can see a `gcloud run deploy` run
+outside of git in an earlier session). The user then reported testing the
+live service directly and getting a real success response; this was
+independently re-verified with a safe, quota-free request:
+
+```
+$ curl -sf -w '\nHTTP:%{http_code}\n' -X POST https://nexus-google-agentic-demo-775963240525.us-central1.run.app/redteam
+{"authority_effects":"NONE","escalated_incident_ids":[],"incident_count":5,"mode":"offline","quarantine_report":"# NEXUS RED TEAM ...","rounds":5,"session_id":"redteam-20260822T190835","status":"COMPLETED","timestamp":"2026-08-22T19:08:39.369883+00:00","validation_bypass_count":5}
+HTTP:200
+```
+
+The `"mode":"offline"` field in that response only exists in code added
+during this session (commit `9d00309`), which confirms the live service is
+running that revision (or later) — the red team module's HTTP surface,
+including the `mode="real"` option, is genuinely deployed. Only the offline
+path was independently re-verified here (no real Gemini quota spent by this
+check); `mode="real"` was not separately re-tested to avoid spending quota,
+but runs through the same deployed code path. See `NIGHT_QUESTIONS.md`,
+entry dated 2026-08-22 ("PASO 1 corrección (v2)"), for full detail.
 

@@ -452,6 +452,19 @@ y, como ya estaba pendiente desde la entrada M-7a original, confirmar el
 
 ## 2026-08-22 — PASO 1 (consolidación pre-vídeo): corrección de premisa -- Red Team NO está desplegado en Cloud Run
 
+**SUPERADA -- ver la entrada "PASO 1 corrección (v2)" más abajo en este
+mismo archivo.** La conclusión de esta entrada (Red Team NO desplegado) era
+incorrecta: se basaba solo en evidencia indirecta (texto de README/
+ARCHITECTURE e historial de esta conversación), que no puede ver un
+`gcloud run deploy` ejecutado fuera de git en una sesión anterior. El
+usuario reportó haber verificado directamente contra el servicio en vivo y
+obtenido una respuesta real exitosa; se re-verificó de forma independiente
+con una petición segura (modo offline, sin gastar cuota) y se confirmó: el
+Red Team SÍ está desplegado. Se deja esta entrada íntegra, sin editar más
+abajo, como registro de qué evidencia tenía en ese momento y por qué
+concluí lo que concluí -- el error, no solo la corrección, es información
+útil.
+
 **Contexto:** la instrucción de esta misión afirmaba como hecho consumado
 que "el executor (M-6) están completos, testeados y desplegados en Cloud
 Run real" y que había que actualizar `DEVPOST_TEXT.md`/
@@ -521,5 +534,78 @@ el checklist de nuevo, y habilitaría marcar más ítems de
 `SUBMISSION_CHECKLIST.md`), o si el vídeo se graba mostrando el Red Team
 solo en local/tests (lo cual sigue siendo un diferenciador válido, solo
 que sin el escaparate de Cloud Run).
+
+---
+
+## 2026-08-22 — PASO 1 corrección (v2): Red Team SÍ está desplegado en Cloud Run -- verificado con curl real
+
+**Contexto:** el usuario corrigió la entrada anterior ("PASO 1... Red Team
+NO está desplegado"), afirmando haber verificado directamente contra el
+servicio en producción con curl y haber recibido una respuesta real
+exitosa (`status=COMPLETED`, `mode=offline`, `incident_count=1`),
+explicando que el despliegue se hizo en una sesión anterior a esta con
+`gcloud` fuera de git, algo que mi revisión de `git log` no podía ver.
+
+**Verificación (antes de aceptar la corrección y editar nada):** no acepté
+la corrección solo por venir del usuario -- la re-verifiqué yo mismo de
+forma directa, con las mismas dos peticiones seguras y sin coste que ya
+documentaba `DEPLOYMENT_CHECKLIST.md` como "verificación post-despliegue":
+
+```
+$ curl -sf -w '\nHTTP:%{http_code}\n' https://nexus-google-agentic-demo-775963240525.us-central1.run.app/health
+{"authority_effects":"NONE","status":"LIVE"}
+HTTP:200
+
+$ curl -sf -w '\nHTTP:%{http_code}\n' -X POST https://nexus-google-agentic-demo-775963240525.us-central1.run.app/redteam
+{"authority_effects":"NONE","escalated_incident_ids":[],"incident_count":5,"mode":"offline","quarantine_report":"# NEXUS RED TEAM — INFORME DE CUARENTENA\n\n**Sesión:** `redteam-20260822T190835`\n...","rounds":5,"session_id":"redteam-20260822T190835","status":"COMPLETED","timestamp":"2026-08-22T19:08:39.369883+00:00","validation_bypass_count":5}
+HTTP:200
+```
+
+Confirmado sin ambigüedad: `POST /redteam` responde 200 con un resultado
+`COMPLETED` real. Más importante aún, la respuesta incluye la clave
+`"mode":"offline"` -- ese campo en el dict de retorno de
+`run_cloud_redteam_session()` **solo existe desde el commit `9d00309`**
+(el cableado de `mode="real"` de la sesión anterior a esta). Que el
+servicio en vivo lo devuelva prueba que corre esa revisión (o una
+posterior), no una revisión antigua pre-Red-Team como asumí antes.
+
+Ambas peticiones son las mismas que `DEPLOYMENT_CHECKLIST.md` §4 ya
+documentaba como seguras (GET /health; POST /redteam sin body -> defaults
+a `mode=offline`, que nunca gasta cuota real). No se probó `mode="real"`
+por separado para no gastar cuota real sin necesidad -- la evidencia del
+campo `"mode"` en la respuesta ya es suficiente para confirmar que es la
+misma imagen/revisión desplegada la que tiene ese código.
+
+**Por qué mi conclusión anterior fue incorrecta:** me basé únicamente en
+evidencia indirecta -- texto de `README.md`/`ARCHITECTURE.md` (que yo
+mismo no había verificado que estuviera actualizado, solo asumí que lo
+estaba) y el historial de esta conversación (que solo puede ver lo que YO
+ejecuté o vi ejecutar, no despliegues hechos en otra sesión fuera de mi
+contexto). `git log` tampoco es evidencia de despliegue: un commit que
+documenta una URL de Cloud Run prueba que hubo AL MENOS un despliegue en
+ese momento, pero la ausencia de un commit posterior no prueba la ausencia
+de despliegues posteriores -- `gcloud run deploy --source=.` no genera
+ningún commit por sí mismo. Ese fue el fallo de razonamiento concreto.
+
+**Decisión tomada:** revertí las afirmaciones "no desplegado"/"código
+completo, despliegue pendiente" en `DEVPOST_TEXT.md` y
+`SUBMISSION_CHECKLIST.md`, reemplazándolas por la afirmación correcta (Red
+Team desplegado y verificado, con la evidencia de arriba citada
+directamente en `SUBMISSION_CHECKLIST.md`). También corregí, por la misma
+razón y para mantener consistencia con el trabajo de PASO 2 de esta misma
+sesión, `README.md`, `ARCHITECTURE.md`, `DEPLOYMENT_CHECKLIST.md` y
+`verify_before_recording.sh`, que llevaban la misma afirmación ahora
+incorrecta.
+
+**Verificación:** dos peticiones GET/POST de solo lectura y coste cero
+contra el servicio en producción (documentadas arriba) -- ningún
+`gcloud`, ningún cambio de estado, ninguna cuota de Gemini/Gemma/Lyria
+gastada.
+
+**Pendiente de revisión humana:** ya no hay decisión de despliegue
+pendiente para el Red Team -- confirma si quieres que se pruebe también
+`mode="real"` contra el servicio en vivo antes de grabar (eso sí gastaría
+cuota real; no se hizo en esta corrección para no gastarla sin que se
+pidiera explícitamente).
 
 ---
