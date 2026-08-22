@@ -85,6 +85,51 @@ Before submission, replace `<eligible-gemini-model>` with the exact model ID
 captured from the accepted smoke evidence and verify that it satisfies the
 contest's Gemini 3.5-or-newer requirement.
 
+## Run a red team session locally
+
+See [ARCHITECTURE.md](ARCHITECTURE.md#red-team-module) for what this
+exercises: a Gemini attacker's raw, unvalidated attempts run through the
+same NEXUS validation as the demo above, get recorded as hash-chained
+incidents, classified by Gemma, and — only on triple-filter agreement —
+consolidated into a quarantine report. Nothing here ever executes a mission;
+`mission_executor.py` (M-6) requires a separate, explicit human `ALLOW`
+this module never generates.
+
+This phase (M-9) only wires the deterministic **offline** path end to end —
+same isolated-child mechanism as `--mode offline` above, no real Gemini
+quota spent. Because the offline backend always returns the same fixed,
+well-formed candidate regardless of the attack prompt, every round in this
+mode is reported as `VALIDATION_BYPASS` (never executed) rather than a
+genuine finding — this proves the wiring, not an actual red-team result. A
+`--mode real` equivalent for this runner is deferred to the supervised
+session (see `NIGHT_QUESTIONS.md`, entry dated 2026-08-22).
+
+From the repository root:
+
+```bash
+cd engineering-loop
+.antigravity_isolated_venv/bin/python - <<'PY'
+from google_agentic_demo import build_transport
+from provider_capability_registry import default_provider_capability_registry
+from red_team_session import run_red_team_session
+
+transport, model_id = build_transport("offline", model_id=None, environ={})
+registry = default_provider_capability_registry()
+result = run_red_team_session(
+    "Verify the governed Google agentic proposal pipeline (red team)",
+    registry, transport, rounds=5, model_id=model_id, use_gemma_fallback=True,
+)
+print(f"session_id={result.session_id}")
+print(f"incidents={len(result.incidents)}")
+print(f"validation_bypasses={len(result.validation_bypasses)}")
+print(result.quarantine_report)
+PY
+```
+
+`rounds` has no ceiling in this library call — the hard cap of 15 is
+enforced only at the `POST /redteam` HTTP layer (M-7a), which also is not
+yet deployed; see the "PENDIENTE" placeholder below.
+
 ## Staging output
 
 Each successful run creates:
@@ -126,6 +171,11 @@ Live URL: https://nexus-google-agentic-demo-775963240525.us-central1.run.app
 Health check: curl https://nexus-google-agentic-demo-775963240525.us-central1.run.app/health
 Offline demo: curl -X POST https://nexus-google-agentic-demo-775963240525.us-central1.run.app/demo/offline
 Real demo: curl -X POST https://nexus-google-agentic-demo-775963240525.us-central1.run.app/demo
+
+Red team session (M-7a): [PENDIENTE: URL tras despliegue supervisado] —
+code-complete (`POST /redteam`, `GET /quarantine/<incident_id>`), not
+deployed as part of this work. See "Run a red team session locally" above
+for the equivalent local command.
 
 Redeploy from a clean checkout:
 1. git clone https://github.com/dixsystem/nexus-google-hackathon-submission.git
