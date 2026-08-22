@@ -211,3 +211,40 @@ para Gemma/Lyria), y si se desea implementar la llamada real de
 `gemini_assessor` antes de exponer `/redteam` en producción.
 
 ---
+
+## 2026-08-22 — M-7a: POST /redteam corre siempre en modo offline/determinista
+
+**Contexto:** la misión no especifica si `/redteam` debe operar en modo
+"real" (Gemini vivo, vía el mismo `IsolatedGeminiTransport` que ya usa
+`/demo`) o en el modo offline determinista que ya usa `/demo/offline`.
+Un modo "real" completo necesitaría DOS transports aislados por ronda
+(uno para el atacante Gemini, otro para Gemma) -- el doble de la
+complejidad de proceso-hijo que `/demo` ya maneja para uno solo -- y esta
+misión es explícitamente "código only, SIN desplegar": no hay forma de
+probar un modo real contra credenciales reales sin gastar cuota, ni
+sentido en cablear esa complejidad antes de la sesión de despliegue
+supervisada.
+
+**Decisión tomada:** `POST /redteam` usa siempre
+`build_transport("offline", ...)` (el mismo backend determinista local
+ya usado por `/demo/offline`, sin red real) para el atacante, y
+`use_gemma_fallback=True` en `run_red_team_session()` para evitar
+necesitar un segundo transport de Gemma por completo. El backend offline
+existente (`google_agentic_demo._offline_candidate_json()`) devuelve
+siempre un candidato legítimo fijo sin importar el prompt -- así que en
+este modo, cada ronda del `/redteam` offline se marca como
+`VALIDATION_BYPASS` de forma determinista (nunca ejecutado, solo
+reportado): es una demostración honesta del cableado completo M-1..M-6,
+no un red-team real. Un modo `/redteam` real (Gemini vivo) queda
+explícitamente para la sesión supervisada de despliegue.
+
+**Por qué es segura:** no hay llamada de red real, no hay gasto de cuota,
+y el resultado (siempre VALIDATION_BYPASS, nunca ejecutado) no puede
+disparar ningún efecto -- `run_red_team_session` ya garantiza que un
+VALIDATION_BYPASS nunca invoca `mission_executor.py`.
+
+**Pendiente de revisión humana:** decidir si vale la pena cablear un modo
+real para `/redteam` en la sesión de despliegue, y con qué política de
+límite de cuota.
+
+---
