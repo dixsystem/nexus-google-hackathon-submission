@@ -8,6 +8,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
 from pathlib import Path
+import re
 import tempfile
 from urllib.parse import unquote
 
@@ -27,11 +28,84 @@ DEFAULT_REDTEAM_ROUNDS = 5
 # de pedir más rondas se rechaza con 400, nunca se recorta en silencio.
 MAX_REDTEAM_ROUNDS = 15
 
-# TODO(sesión supervisada): almacenamiento in-memory/proceso -- se pierde en
-# cada reinicio del proceso y no se comparte entre réplicas de Cloud Run. En
-# producción esto debería ser un almacén persistente (p.ej. el mismo Cloud
-# Storage que ya usa mission_executor.py, o Firestore) keyed por incident_id.
-_QUARANTINE_STORE: dict = {}
+# M-7a paso 2 (sesión supervisada, persistencia real): un único bucket
+# compartido, no un bucket por sesión como mission_executor.py (M-6) usa
+# para ejecuciones ALLOW. Los informes de cuarentena son un log de
+# auditoría de solo lectura, potencialmente de alto volumen (una sesión
+# genera un incidente por ronda); multiplicar buckets por sesión aquí solo
+# proliferaría infraestructura sin el beneficio de aislamiento que sí
+# justifica un bucket por misión ejecutada (evento raro y deliberado). Cada
+# incidente es un objeto independiente, direccionable directamente por su
+# incident_id -- evita necesitar un índice separado session_id->incident_id.
+DEFAULT_QUARANTINE_BUCKET_NAME = "nexus-redteam-quarantine"
+
+_SAFE_QUARANTINE_INCIDENT_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,255}\Z")
+
+
+def _quarantine_object_path(incident_id: str) -> str:
+    return f"incidents/{incident_id}.json"
+
+
+class QuarantineStore:
+    """Persistencia de informes de cuarentena. Mismo contrato duck-typed
+    que MissionExecutor (M-6, engineering-loop/mission_executor.py): nunca
+    importa google.cloud.storage directamente, storage_client es inyectado
+    -- pero aquí es .bucket(name) (obtiene una referencia local, sin
+    crear/verificar nada en el servidor), no .create_bucket(name) como en
+    M-6, porque este bucket es COMPARTIDO y reutilizado entre sesiones --
+    llamar create_bucket() en cada escritura fallaría a partir de la
+    segunda vez (el bucket ya existiría). El objeto devuelto por .bucket()
+    debe exponer .blob(path) -> objeto con .upload_from_string(data,
+    content_type=...) y .download_as_bytes().
+
+    Si storage_client es None (el caso por defecto hoy -- construir un
+    Client real de producción queda para la sesión de despliegue, paso 3),
+    usa un fallback in-memory explícito -- mismo comportamiento exacto que
+    el _QUARANTINE_STORE anterior, para no romper el modo offline ni los
+    tests existentes."""
+
+    def __init__(self, storage_client=None, *, bucket_name: str = DEFAULT_QUARANTINE_BUCKET_NAME):
+        self._storage_client = storage_client
+        self._bucket_name = bucket_name
+        self._memory_fallback = {} if storage_client is None else None
+
+    def put(self, incident_id: str, report: str) -> None:
+        if _SAFE_QUARANTINE_INCIDENT_ID.fullmatch(incident_id) is None:
+            return
+        if self._storage_client is None:
+            self._memory_fallback[incident_id] = report
+            return
+        document = json.dumps(
+            {"incident_id": incident_id, "quarantine_report": report},
+            ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+        ).encode("utf-8")
+        bucket = self._storage_client.bucket(self._bucket_name)
+        blob = bucket.blob(_quarantine_object_path(incident_id))
+        blob.upload_from_string(document, content_type="application/json")
+
+    def get(self, incident_id: str) -> str | None:
+        if self._storage_client is None:
+            return self._memory_fallback.get(incident_id)
+        # Superficie de ataque real: incident_id llega aquí desde la URL de
+        # GET /quarantine/<incident_id> (entrada del usuario), a diferencia
+        # de put() que solo recibe incident_id ya generados internamente --
+        # se valida antes de construir cualquier ruta de objeto (mismo
+        # patrón que lyria_alert_sound._require_safe_incident_id).
+        if _SAFE_QUARANTINE_INCIDENT_ID.fullmatch(incident_id) is None:
+            return None
+        bucket = self._storage_client.bucket(self._bucket_name)
+        blob = bucket.blob(_quarantine_object_path(incident_id))
+        try:
+            raw = blob.download_as_bytes()
+            parsed = json.loads(raw.decode("utf-8"))
+        except Exception:  # fail closed to "not found" -- never leak backend diagnostics
+            return None
+        if not isinstance(parsed, dict):
+            return None
+        return parsed.get("quarantine_report")
+
+
+_QUARANTINE_STORE = QuarantineStore()
 
 
 class CloudDemoConfigurationError(Exception):
@@ -127,8 +201,12 @@ def run_cloud_redteam_session(*, rounds: int = DEFAULT_REDTEAM_ROUNDS, environ=N
         model_id=selected_model, use_gemma_fallback=True,
     )
 
-    for incident in result.incidents:
-        _QUARANTINE_STORE[incident.incident_id] = result.quarantine_report
+    # Solo se persiste cuando corresponde (consensus=ESCALATE) -- un
+    # incidente archivado, sin consenso, o VALIDATION_BYPASS no genera
+    # entrada de cuarentena (el bypass, en particular, nunca pasa por el
+    # triple filtro en absoluto -- ver red_team_session.py).
+    for incident_id in result.escalated_incident_ids:
+        _QUARANTINE_STORE.put(incident_id, result.quarantine_report)
 
     return {
         "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -137,6 +215,7 @@ def run_cloud_redteam_session(*, rounds: int = DEFAULT_REDTEAM_ROUNDS, environ=N
         "rounds": rounds,
         "incident_count": len(result.incidents),
         "validation_bypass_count": len(result.validation_bypasses),
+        "escalated_incident_ids": list(result.escalated_incident_ids),
         "authority_effects": "NONE",
         "quarantine_report": result.quarantine_report,
     }
@@ -173,7 +252,7 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:  # fail closed on a malformed path segment
             self._json(404, {"status": "NOT_FOUND"})
             return
-        report = _QUARANTINE_STORE.get(incident_id)
+        report = _QUARANTINE_STORE.get(incident_id)  # storage real si hay storage_client, in-memory si no
         if report is None:
             self._json(404, {"status": "NOT_FOUND", "incident_id": incident_id})
             return

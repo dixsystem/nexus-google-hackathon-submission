@@ -62,6 +62,10 @@ def gemma_response_json(severity, justification="test", confidence=0.9):
     return json.dumps({"severity": severity, "justification": justification, "confidence": confidence})
 
 
+def gemini_assessment_response_json(assessment):
+    return json.dumps({"assessment": assessment})
+
+
 class QueueTransport:
     """Doble de prueba: agota una cola de RawGeminiResult en orden y
     registra cada model_id con el que fue llamado."""
@@ -91,6 +95,11 @@ class NormalSessionTest(unittest.TestCase):
             "test goal", registry, attacker_transport, rounds=3,
             session_id="sess-normal", model_id=ATTACKER_MODEL_ID,
             gemma_transport=gemma_transport,
+            # Explícito "UNKNOWN": este test verifica chain integrity y
+            # ausencia de escalación, no el comportamiento de
+            # gemini_assess_attack (cubierto en GeminiAssessAttackTest) --
+            # sin esto, el default real consumiría de attacker_transport.
+            gemini_assessor=lambda incident: "UNKNOWN",
         )
 
         self.assertEqual(result.session_id, "sess-normal")
@@ -100,8 +109,9 @@ class NormalSessionTest(unittest.TestCase):
             self.assertTrue(incident.blocked)
             self.assertIsNotNone(incident.rejection_reason)
 
-        # default gemini_assessor -> siempre "UNKNOWN" -> siempre NO_CONSENSUS -> nunca escala
+        # gemini_assessor="UNKNOWN" -> siempre NO_CONSENSUS -> nunca escala
         self.assertNotIn("PROMPT PARA KEEPER", result.quarantine_report)
+        self.assertEqual(result.escalated_incident_ids, ())
 
         session = incident_module.build_session(
             session_id="sess-normal", started_at="2026-08-22T00:00:00Z",
@@ -117,6 +127,7 @@ class NormalSessionTest(unittest.TestCase):
         result = subject.run_red_team_session(
             "test goal", registry, attacker_transport, rounds=1,
             model_id=ATTACKER_MODEL_ID, gemma_transport=gemma_transport,
+            gemini_assessor=lambda incident: "UNKNOWN",
         )
         self.assertTrue(result.session_id.startswith("redteam-"))
 
@@ -159,6 +170,7 @@ class EscalateSessionTest(unittest.TestCase):
         self.assertIn("PROMPT PARA KEEPER", result.quarantine_report)
         self.assertIn(result.incidents[0].incident_id, result.quarantine_report)
         self.assertIn("very sophisticated attempt", result.quarantine_report)
+        self.assertEqual(result.escalated_incident_ids, (result.incidents[0].incident_id,))
 
     def test_mixed_session_only_escalated_incidents_get_prompt_blocks(self):
         registry = make_registry()
@@ -210,6 +222,134 @@ class ValidationBypassTest(unittest.TestCase):
             session_id="sess-bypass-2", model_id=ATTACKER_MODEL_ID,
         )
         self.assertEqual(result.validation_bypasses[0].mission_id, subject._SYNTHETIC_MISSION_ID)
+
+
+class GeminiAssessAttackTest(unittest.TestCase):
+    """Tests dedicados de gemini_assess_attack() (sesión supervisada,
+    paso 1) -- transport siempre mockeado, ninguna llamada real a Gemini."""
+
+    def test_returns_sophisticated_from_mocked_transport(self):
+        transport = QueueTransport(
+            [raw_result(subject.DEFAULT_GEMINI_ASSESSOR_MODEL_ID, gemini_assessment_response_json("SOPHISTICATED"))]
+        )
+        result = subject.gemini_assess_attack(blocked_attack_json(), "some rejection reason", transport)
+        self.assertEqual(result, "SOPHISTICATED")
+
+    def test_returns_trivial_from_mocked_transport(self):
+        transport = QueueTransport(
+            [raw_result(subject.DEFAULT_GEMINI_ASSESSOR_MODEL_ID, gemini_assessment_response_json("TRIVIAL"))]
+        )
+        result = subject.gemini_assess_attack(blocked_attack_json(), "some rejection reason", transport)
+        self.assertEqual(result, "TRIVIAL")
+
+    def test_falls_back_to_unknown_when_transport_raises(self):
+        def failing_transport(model_id, prompt, format, timeout):
+            raise RuntimeError("Gemini is unreachable")
+
+        result = subject.gemini_assess_attack(blocked_attack_json(), "reason", failing_transport)
+        self.assertEqual(result, "UNKNOWN")
+
+    def test_falls_back_to_unknown_on_malformed_json_response(self):
+        transport = QueueTransport(
+            [raw_result(subject.DEFAULT_GEMINI_ASSESSOR_MODEL_ID, "not json at all { broken")]
+        )
+        result = subject.gemini_assess_attack(blocked_attack_json(), "reason", transport)
+        self.assertEqual(result, "UNKNOWN")
+
+    def test_falls_back_to_unknown_on_unexpected_fields(self):
+        transport = QueueTransport(
+            [raw_result(subject.DEFAULT_GEMINI_ASSESSOR_MODEL_ID, json.dumps({"assessment": "SOPHISTICATED", "extra": True}))]
+        )
+        result = subject.gemini_assess_attack(blocked_attack_json(), "reason", transport)
+        self.assertEqual(result, "UNKNOWN")
+
+    def test_falls_back_to_unknown_on_invalid_assessment_value(self):
+        transport = QueueTransport(
+            [raw_result(subject.DEFAULT_GEMINI_ASSESSOR_MODEL_ID, json.dumps({"assessment": "MALICIOUS"}))]
+        )
+        result = subject.gemini_assess_attack(blocked_attack_json(), "reason", transport)
+        self.assertEqual(result, "UNKNOWN")
+
+    def test_empty_attack_payload_returns_unknown_without_calling_transport(self):
+        transport = QueueTransport([])
+        result = subject.gemini_assess_attack("", "reason", transport)
+        self.assertEqual(result, "UNKNOWN")
+        self.assertEqual(transport.calls, [])
+
+    def test_uses_expected_model_id_and_includes_payload_and_reason_in_prompt(self):
+        transport = QueueTransport(
+            [raw_result(subject.DEFAULT_GEMINI_ASSESSOR_MODEL_ID, gemini_assessment_response_json("TRIVIAL"))]
+        )
+        attack_payload = '{"marker":"XYZ-PAYLOAD"}'
+        subject.gemini_assess_attack(attack_payload, "XYZ-REASON", transport)
+        self.assertEqual(transport.calls, [subject.DEFAULT_GEMINI_ASSESSOR_MODEL_ID])
+
+    def test_custom_model_id_is_honored(self):
+        transport = QueueTransport(
+            [raw_result("custom-gemini-model", gemini_assessment_response_json("SOPHISTICATED"))]
+        )
+        result = subject.gemini_assess_attack(
+            blocked_attack_json(), "reason", transport, model_id="custom-gemini-model"
+        )
+        self.assertEqual(result, "SOPHISTICATED")
+        self.assertEqual(transport.calls, ["custom-gemini-model"])
+
+
+class DefaultGeminiAssessorWiringTest(unittest.TestCase):
+    """Prueba de integración: sin gemini_assessor explícito,
+    run_red_team_session() ahora dispara gemini_assess_attack() de verdad
+    (vía transport mockeado) en vez del "UNKNOWN" fijo anterior."""
+
+    def test_default_assessor_calls_gemini_and_can_escalate(self):
+        registry = make_registry()
+        attacker_transport = QueueTransport([raw_result(ATTACKER_MODEL_ID, blocked_attack_json())])
+        gemma_transport = QueueTransport(
+            [raw_result(GEMMA_MODEL_ID, gemma_response_json("ALTO", "escalation-worthy"))]
+        )
+        # Reutiliza attacker_transport para el assessor (default de
+        # gemini_assessor_transport=None -> transport) -- necesita un
+        # segundo item en cola para la llamada del assessor tras el
+        # ataque.
+        attacker_transport._results.append(
+            raw_result(subject.DEFAULT_GEMINI_ASSESSOR_MODEL_ID, gemini_assessment_response_json("SOPHISTICATED"))
+        )
+
+        result = subject.run_red_team_session(
+            "test goal", registry, attacker_transport, rounds=1,
+            session_id="sess-default-assessor", model_id=ATTACKER_MODEL_ID,
+            gemma_transport=gemma_transport,
+        )
+
+        self.assertEqual(attacker_transport.calls, [ATTACKER_MODEL_ID, subject.DEFAULT_GEMINI_ASSESSOR_MODEL_ID])
+        self.assertIn("PROMPT PARA KEEPER", result.quarantine_report)
+
+    def test_default_assessor_transport_failure_degrades_to_no_consensus_not_a_crash(self):
+        registry = make_registry()
+
+        class FailingAfterFirstCall:
+            def __init__(self, first_result):
+                self._first = first_result
+                self.calls = 0
+
+            def __call__(self, model_id, prompt, format, timeout):
+                self.calls += 1
+                if self.calls == 1:
+                    return self._first
+                raise RuntimeError("assessor call unreachable")
+
+        attacker_transport = FailingAfterFirstCall(raw_result(ATTACKER_MODEL_ID, blocked_attack_json()))
+        gemma_transport = QueueTransport([raw_result(GEMMA_MODEL_ID, gemma_response_json("ALTO"))])
+
+        result = subject.run_red_team_session(
+            "test goal", registry, attacker_transport, rounds=1,
+            session_id="sess-assessor-fails", model_id=ATTACKER_MODEL_ID,
+            gemma_transport=gemma_transport,
+        )
+
+        # gemini_assess_attack degrada a UNKNOWN -> NO_CONSENSUS -> no escala,
+        # pero la sesión completa sin lanzar.
+        self.assertEqual(len(result.incidents), 1)
+        self.assertNotIn("PROMPT PARA KEEPER", result.quarantine_report)
 
 
 class NeverExecutesTest(unittest.TestCase):

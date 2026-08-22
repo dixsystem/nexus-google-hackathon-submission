@@ -10,6 +10,7 @@ import urllib.error
 import urllib.request
 
 import google_agentic_cloud_service as subject
+import red_team_session
 
 
 class CloudServiceTests(unittest.TestCase):
@@ -64,12 +65,12 @@ class RedTeamOfflineFunctionTests(unittest.TestCase):
     offline usa el mismo backend determinista local que /demo/offline."""
 
     def setUp(self):
-        subject._QUARANTINE_STORE.clear()
+        subject._QUARANTINE_STORE = subject.QuarantineStore()
 
     def tearDown(self):
-        subject._QUARANTINE_STORE.clear()
+        subject._QUARANTINE_STORE = subject.QuarantineStore()
 
-    def test_offline_redteam_session_completes_and_populates_quarantine_store(self):
+    def test_offline_redteam_session_completes_with_no_escalations_to_persist(self):
         result = subject.run_cloud_redteam_session(rounds=1, environ={})
         self.assertEqual(result["status"], "COMPLETED")
         self.assertEqual(result["rounds"], 1)
@@ -79,9 +80,10 @@ class RedTeamOfflineFunctionTests(unittest.TestCase):
         # El backend offline siempre devuelve el mismo candidato legítimo
         # fijo (google_agentic_demo._offline_candidate_json()) sin importar
         # el prompt -- así que en este modo cada ronda es un
-        # VALIDATION_BYPASS determinista, nunca ejecutado.
+        # VALIDATION_BYPASS determinista, nunca ejecutado, y NUNCA pasa por
+        # el triple filtro -- nada se persiste a cuarentena en este modo.
         self.assertEqual(result["validation_bypass_count"], 1)
-        self.assertEqual(len(subject._QUARANTINE_STORE), 1)
+        self.assertEqual(result["escalated_incident_ids"], [])
 
     def test_rejects_rounds_above_hard_cap(self):
         with self.assertRaises(subject.CloudDemoConfigurationError):
@@ -173,13 +175,13 @@ class RedTeamEndpointHTTPTests(unittest.TestCase):
 
 class QuarantineEndpointHTTPTests(unittest.TestCase):
     def setUp(self):
-        subject._QUARANTINE_STORE.clear()
+        subject._QUARANTINE_STORE = subject.QuarantineStore()
 
     def tearDown(self):
-        subject._QUARANTINE_STORE.clear()
+        subject._QUARANTINE_STORE = subject.QuarantineStore()
 
     def test_get_quarantine_returns_stored_report(self):
-        subject._QUARANTINE_STORE["sess-x:round-1"] = "# quarantine report body"
+        subject._QUARANTINE_STORE.put("sess-x:round-1", "# quarantine report body")
         with _running_server() as base_url:
             status, payload = _http_request(f"{base_url}/quarantine/sess-x:round-1")
         self.assertEqual(status, 200)
@@ -193,7 +195,7 @@ class QuarantineEndpointHTTPTests(unittest.TestCase):
         self.assertEqual(payload["status"], "NOT_FOUND")
 
     def test_get_quarantine_url_decodes_the_incident_id(self):
-        subject._QUARANTINE_STORE["sess-y:round-2"] = "# report"
+        subject._QUARANTINE_STORE.put("sess-y:round-2", "# report")
         with _running_server() as base_url:
             status, payload = _http_request(f"{base_url}/quarantine/sess-y%3Around-2")
         self.assertEqual(status, 200)
@@ -210,6 +212,153 @@ class QuarantineEndpointHTTPTests(unittest.TestCase):
             status, payload = _http_request(f"{base_url}/health")
         self.assertEqual(status, 200)
         self.assertEqual(payload["status"], "LIVE")
+
+
+# -- M-7a paso 2: persistencia real de cuarentena en Cloud Storage ------
+
+
+class FakeBlob:
+    def __init__(self, client, bucket_name, path):
+        self._client = client
+        self.bucket_name = bucket_name
+        self.path = path
+        self.content_type = None
+
+    def upload_from_string(self, data, content_type=None):
+        self.content_type = content_type
+        self._client.data.setdefault(self.bucket_name, {})[self.path] = data
+
+    def download_as_bytes(self):
+        try:
+            return self._client.data[self.bucket_name][self.path]
+        except KeyError:
+            raise FileNotFoundError(f"no such object: {self.bucket_name}/{self.path}")
+
+
+class FakeBucket:
+    def __init__(self, client, name):
+        self._client = client
+        self.name = name
+
+    def blob(self, path):
+        return FakeBlob(self._client, self.name, path)
+
+
+class FakeStorageClient:
+    """Mismo estilo que test_mission_executor.py, adaptado al contrato
+    .bucket(name) (no .create_bucket) que QuarantineStore usa -- data se
+    guarda a nivel de cliente para que dos llamadas separadas a .bucket()
+    (una al escribir, otra al leer) vean el mismo contenido, igual que un
+    Client de GCS real contra el mismo bucket."""
+
+    def __init__(self):
+        self.data = {}  # {bucket_name: {object_path: bytes}}
+        self.bucket_calls = []
+
+    def bucket(self, bucket_name):
+        self.bucket_calls.append(bucket_name)
+        self.data.setdefault(bucket_name, {})
+        return FakeBucket(self, bucket_name)
+
+
+def _fake_session_result(*, session_id, escalated_incident_ids, quarantine_report):
+    return red_team_session.RedTeamSessionResult(
+        session_id=session_id,
+        incidents=(),
+        quarantine_report=quarantine_report,
+        validation_bypasses=(),
+        escalated_incident_ids=tuple(escalated_incident_ids),
+    )
+
+
+class QuarantineStorePersistenceTest(unittest.TestCase):
+    """Tests unitarios de QuarantineStore contra un storage_client fake --
+    nunca toca Cloud Storage real."""
+
+    def test_put_then_get_round_trips_the_same_content(self):
+        store = subject.QuarantineStore(FakeStorageClient())
+        store.put("sess-a:round-1", "# report A")
+        self.assertEqual(store.get("sess-a:round-1"), "# report A")
+
+    def test_get_returns_none_for_missing_incident(self):
+        store = subject.QuarantineStore(FakeStorageClient())
+        self.assertIsNone(store.get("does-not-exist"))
+
+    def test_writes_land_in_the_shared_default_bucket(self):
+        client = FakeStorageClient()
+        store = subject.QuarantineStore(client)
+        store.put("sess-a:round-1", "# report A")
+        self.assertIn(subject.DEFAULT_QUARANTINE_BUCKET_NAME, client.data)
+        self.assertIn("incidents/sess-a:round-1.json", client.data[subject.DEFAULT_QUARANTINE_BUCKET_NAME])
+
+    def test_get_rejects_unsafe_incident_id_without_touching_storage(self):
+        client = FakeStorageClient()
+        store = subject.QuarantineStore(client)
+        self.assertIsNone(store.get("../../etc/passwd"))
+        self.assertEqual(client.bucket_calls, [])
+
+    def test_in_memory_fallback_used_when_storage_client_is_none(self):
+        store = subject.QuarantineStore(storage_client=None)
+        store.put("sess-a:round-1", "# report A")
+        self.assertEqual(store.get("sess-a:round-1"), "# report A")
+
+
+class RedTeamPersistenceIntegrationTest(unittest.TestCase):
+    """Escribe en /redteam (con run_red_team_session mockeado para forzar
+    un ESCALATE, ya que el modo offline real nunca escala) y lee después
+    con /quarantine/<id> -- ambos contra el MISMO storage_client fake, para
+    probar la persistencia real de punta a punta, no solo el fallback
+    in-memory."""
+
+    def setUp(self):
+        self.fake_client = FakeStorageClient()
+        subject._QUARANTINE_STORE = subject.QuarantineStore(self.fake_client)
+
+    def tearDown(self):
+        subject._QUARANTINE_STORE = subject.QuarantineStore()
+
+    def test_run_cloud_redteam_session_persists_only_escalated_incidents(self):
+        fake_result = _fake_session_result(
+            session_id="sess-escalate", escalated_incident_ids=("sess-escalate:round-1",),
+            quarantine_report="# quarantine report with an escalation",
+        )
+        with mock.patch.object(subject, "run_red_team_session", return_value=fake_result):
+            result = subject.run_cloud_redteam_session(rounds=1, environ={})
+
+        self.assertEqual(result["escalated_incident_ids"], ["sess-escalate:round-1"])
+        self.assertEqual(
+            subject._QUARANTINE_STORE.get("sess-escalate:round-1"),
+            "# quarantine report with an escalation",
+        )
+        self.assertIn(subject.DEFAULT_QUARANTINE_BUCKET_NAME, self.fake_client.data)
+
+    def test_run_cloud_redteam_session_persists_nothing_when_no_escalations(self):
+        fake_result = _fake_session_result(
+            session_id="sess-quiet", escalated_incident_ids=(), quarantine_report="# nothing escalated",
+        )
+        with mock.patch.object(subject, "run_red_team_session", return_value=fake_result):
+            subject.run_cloud_redteam_session(rounds=1, environ={})
+        self.assertEqual(self.fake_client.data, {})
+
+    def test_write_via_redteam_then_read_via_quarantine_endpoint_matches(self):
+        fake_result = _fake_session_result(
+            session_id="sess-e2e", escalated_incident_ids=("sess-e2e:round-1",),
+            quarantine_report="# end to end quarantine report",
+        )
+        with mock.patch.object(subject, "run_red_team_session", return_value=fake_result):
+            with _running_server() as base_url:
+                post_status, _ = _http_request(f"{base_url}/redteam", method="POST")
+                self.assertEqual(post_status, 200)
+                get_status, payload = _http_request(f"{base_url}/quarantine/sess-e2e:round-1")
+
+        self.assertEqual(get_status, 200)
+        self.assertEqual(payload["quarantine_report"], "# end to end quarantine report")
+        # Confirma que la lectura vino del storage fake, no de un fallback
+        # in-memory paralelo -- el mismo objeto quedó en fake_client.data.
+        self.assertIn(
+            "incidents/sess-e2e:round-1.json",
+            self.fake_client.data[subject.DEFAULT_QUARANTINE_BUCKET_NAME],
+        )
 
 
 if __name__ == "__main__":
