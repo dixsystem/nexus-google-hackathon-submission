@@ -1,7 +1,7 @@
 """External Proof Anchor (M-9 follow-up): ancla el Merkle root de una
 sesión red-team ESCALADA fuera del dominio de confianza de NEXUS/GCP,
 mediante un commit a un repo público de GitHub
-(dixsystem/nexus-build-governor, decisión del operador -- ver PART 3).
+(dixsystem/nexus-agentic-proof-anchor, decisión del operador -- ver PART 3).
 
 Disparo: SIEMPRE manual, ejecutado por el operador (`python
 red_team_anchor.py anchor <session_id>`) usando las credenciales `gh` ya
@@ -35,7 +35,7 @@ import red_team_merkle
 
 
 DEFAULT_CLOUD_RUN_BASE_URL = "https://nexus-google-agentic-demo-775963240525.us-central1.run.app"
-DEFAULT_ANCHOR_REPO = "dixsystem/nexus-build-governor"
+DEFAULT_ANCHOR_REPO = "dixsystem/nexus-agentic-proof-anchor"
 DEFAULT_ANCHOR_BRANCH = "main"
 _SESSION_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z")
 

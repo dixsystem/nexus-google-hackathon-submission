@@ -35,7 +35,7 @@ python3 engineering-loop/red_team_anchor.py verify <session_id>
 
 Look for: `{"status": "MATCH", "merkle_root": "..."}`.
 
-Requires a `session_id` that has already been escalated and anchored to the public GitHub repo (`dixsystem/nexus-build-governor`) — anchoring is a manual step run by the team (`red_team_anchor.py anchor <session_id>`), not something a judge triggers cold, since it needs `gh` write credentials. No session has been anchored yet as of this writing; the team will anchor one and fill in `<session_id>` here before presenting.
+Requires a `session_id` that has already been escalated and anchored to the public GitHub repo (`dixsystem/nexus-agentic-proof-anchor`) — anchoring is a manual step run by the team (`red_team_anchor.py anchor <session_id>`), not something a judge triggers cold, since it needs `gh` write credentials. No session has been anchored yet as of this writing; the team will anchor one and fill in `<session_id>` here before presenting.
 
 Tamper demonstration (run live): edit one field of the same session's stored JSON in the GCS quarantine bucket, then run the same `verify` command again.
 
