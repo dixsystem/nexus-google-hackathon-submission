@@ -370,8 +370,8 @@ def run_cloud_redteam_attack(*, intent: str, mode: str = DEFAULT_REDTEAM_MODE, e
 
     if not isinstance(intent, str) or not intent.strip() or len(intent) > MAX_REDTEAM_INTENT_CHARS:
         raise CloudDemoConfigurationError("intent must be non-empty bounded text")
-    if mode not in ("offline", "real"):
-        raise CloudDemoConfigurationError("mode must be offline or real")
+    if mode not in ("offline", "offline-attack", "real"):
+        raise CloudDemoConfigurationError("mode must be offline, offline-attack, or real")
 
     environment = os.environ if environ is None else environ
     if mode == "real":
@@ -534,8 +534,8 @@ class Handler(BaseHTTPRequestHandler):
         ):
             raise CloudDemoConfigurationError("intent is required and must be non-empty bounded text")
         mode = payload.get("mode", DEFAULT_REDTEAM_MODE)
-        if mode not in ("offline", "real"):
-            raise CloudDemoConfigurationError("mode must be offline or real")
+        if mode not in ("offline", "offline-attack", "real"):
+            raise CloudDemoConfigurationError("mode must be offline, offline-attack, or real")
         return intent, mode
 
     def _handle_redteam_attack(self):
