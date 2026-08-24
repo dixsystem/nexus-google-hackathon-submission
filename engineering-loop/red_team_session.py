@@ -171,6 +171,16 @@ class RedTeamSessionResult:
     # Gemini sobre su propio intento; el otro es el veredicto de gobernanza
     # de Nexus. Ver google_agentic_cloud_service.py, endpoint /redteam/attack.
     gemini_assessments: dict = field(default_factory=dict)
+    # JSON completo de la sesión (red_team_incident.session_to_json(session),
+    # sin modificar -- ver External Proof Anchor): incluye TODOS los
+    # incidentes (no solo los escalados), con sus incident_hash/
+    # previous_incident_hash intactos, para que verify_session_chain +
+    # merkle_root (red_team_merkle.py) puedan reconstruirse desde este JSON
+    # tal cual quedó persistido, sin depender del objeto RedTeamSession en
+    # memoria de esta misma corrida. Default "" solo para no romper
+    # construcciones existentes de RedTeamSessionResult en tests que no lo
+    # pasan explícitamente -- run_red_team_session() siempre lo rellena.
+    session_json: str = ""
 
 
 class _ReplayProvider:
@@ -365,6 +375,7 @@ def run_red_team_session(
         validation_bypasses=tuple(validation_bypasses),
         escalated_incident_ids=tuple(incident.incident_id for incident in escalated_incidents),
         gemini_assessments=dict(gemini_assessments),
+        session_json=red_team_incident.session_to_json(session),
     )
 
 

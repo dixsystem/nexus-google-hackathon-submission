@@ -318,6 +318,20 @@ def run_cloud_redteam_session(
     for incident_id in result.escalated_incident_ids:
         _QUARANTINE_STORE.put(incident_id, result.quarantine_report)
 
+    # External Proof Anchor (M-9 follow-up): mismo camino de escritura que
+    # arriba, sin infraestructura GCS nueva -- QuarantineStore.put() solo
+    # espera (key, content); aquí el "content" es el JSON COMPLETO de la
+    # sesión (todos los incidentes, no solo los escalados, con su cadena de
+    # incident_hash intacta -- red_team_session.session_json, ya calculado
+    # vía red_team_incident.session_to_json), bajo una clave distinta
+    # ("session-<id>") para no colisionar con los objetos por-incidente de
+    # arriba. Solo si al menos un incidente escaló -- mismo criterio de
+    # alcance que ya rige la persistencia de arriba, para que anclar
+    # externamente (PART 3) solo cubra sesiones que ya calificaron para
+    # cuarentena, no cada sesión offline trivial.
+    if result.escalated_incident_ids:
+        _QUARANTINE_STORE.put(f"session-{result.session_id}", result.session_json)
+
     return {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "status": "COMPLETED",
@@ -397,6 +411,9 @@ def run_cloud_redteam_attack(*, intent: str, mode: str = DEFAULT_REDTEAM_MODE, e
 
     if incident.incident_id in result.escalated_incident_ids:
         _QUARANTINE_STORE.put(incident.incident_id, result.quarantine_report)
+        # External Proof Anchor -- mismo criterio y mismo camino de
+        # escritura que run_cloud_redteam_session; ver comentario ahí.
+        _QUARANTINE_STORE.put(f"session-{result.session_id}", result.session_json)
 
     return {
         "timestamp": datetime.now(timezone.utc).isoformat(),
