@@ -35,7 +35,7 @@ y separada, no un prompt automático para Keeper)."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import json
 from typing import Callable, Optional
@@ -163,6 +163,14 @@ class RedTeamSessionResult:
     quarantine_report: str  # Markdown consolidado (M-4), solo incidentes con consensus=ESCALATE
     validation_bypasses: tuple  # tuple[ValidationBypass, ...] -- normalmente vacía
     escalated_incident_ids: tuple = ()  # tuple[str, ...] -- incident_id de los que tuvieron consensus=ESCALATE
+    # incident_id -> uno de consensus_gate.GEMINI_ASSESSMENTS ("SOPHISTICATED"/
+    # "TRIVIAL"/"UNKNOWN"), solo para incidentes bloqueados (gemini_assess_attack
+    # ya se llamaba internamente antes de este campo; esto solo expone su
+    # resultado ya calculado -- ninguna llamada nueva a Gemini). Independiente,
+    # por construcción, de incident.blocked: uno es la AUTO-evaluación de
+    # Gemini sobre su propio intento; el otro es el veredicto de gobernanza
+    # de Nexus. Ver google_agentic_cloud_service.py, endpoint /redteam/attack.
+    gemini_assessments: dict = field(default_factory=dict)
 
 
 class _ReplayProvider:
@@ -284,6 +292,7 @@ def run_red_team_session(
     previous_failures = []
     escalated_incidents = []
     severities = {}
+    gemini_assessments = {}
     validation_bypasses = []
 
     for attack_round in range(1, rounds + 1):
@@ -334,6 +343,7 @@ def run_red_team_session(
                 "CONFIGURATION",
                 f"gemini_assessor returned an invalid assessment: {gemini_assessment!r}",
             )
+        gemini_assessments[incident.incident_id] = gemini_assessment
 
         verdict = consensus_gate.evaluate_consensus(blocked, gemini_assessment, severity_assessment.severity)
         if verdict.consensus == "ESCALATE":
@@ -354,6 +364,7 @@ def run_red_team_session(
         quarantine_report=report,
         validation_bypasses=tuple(validation_bypasses),
         escalated_incident_ids=tuple(incident.incident_id for incident in escalated_incidents),
+        gemini_assessments=dict(gemini_assessments),
     )
 
 

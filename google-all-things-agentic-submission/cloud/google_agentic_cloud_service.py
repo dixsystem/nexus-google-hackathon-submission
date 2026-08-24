@@ -49,6 +49,43 @@ DEFAULT_QUARANTINE_BUCKET_NAME = "nexus-redteam-quarantine"
 
 _SAFE_QUARANTINE_INCIDENT_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,255}\Z")
 
+# /redteam/attack (judge-facing, free-text intent): un único intento
+# (rounds=1, no configurable aquí -- ver run_cloud_redteam_attack), no una
+# sesión multi-ronda. Mismo límite de longitud que red_team_incident.py ya
+# aplica a RedTeamSession.goal (_require_text(..., maximum=4000)) --
+# reutilizado, no reinventado.
+MAX_REDTEAM_INTENT_CHARS = 4000
+
+# Extrae, de forma puramente determinista (sin ningún juicio de un LLM), el
+# código corto ya presente en el rejection_reason que la validación de
+# gobernanza (mission_generator_llm_producer / mission_generator_candidates,
+# vía red_team_session._validate_attack_against_nexus) ya produce hoy.
+# MissionGeneratorLLMError formatea su motivo como "ClassName[CATEGORY]: msg"
+# (ver red_team_session.py); cualquier otra excepción de gobernanza
+# (GeneratedMissionCandidateError y subclases) se formatea como
+# "ClassName: msg" -- en ese caso el nombre de la clase ES el código.
+_REASON_CODE_BRACKET = re.compile(r"^\w+\[(\w+)\]")
+
+
+def _extract_reason_code(rejection_reason) -> str:
+    if not isinstance(rejection_reason, str) or not rejection_reason:
+        return "NONE"
+    match = _REASON_CODE_BRACKET.match(rejection_reason)
+    if match:
+        return match.group(1)
+    return rejection_reason.split(":", 1)[0].strip() or "UNKNOWN"
+
+
+def _parse_attack_payload(raw_attack_payload):
+    """Devuelve el JSON que Gemini construyó como objeto estructurado
+    cuando es parseable; si no lo es (el ataque puede intentar romper
+    justo el parseo -- ver red_team_attacker.py), devuelve el texto crudo
+    tal cual, nunca lanza."""
+    try:
+        return json.loads(raw_attack_payload)
+    except (TypeError, ValueError):
+        return raw_attack_payload
+
 
 def _quarantine_object_path(incident_id: str) -> str:
     return f"incidents/{incident_id}.json"
@@ -295,6 +332,88 @@ def run_cloud_redteam_session(
     }
 
 
+def run_cloud_redteam_attack(*, intent: str, mode: str = DEFAULT_REDTEAM_MODE, environ=None) -> dict:
+    """Un único intento de ataque a partir de texto libre de un juez --
+    POST /redteam/attack (distinto de POST /redteam, M-7a, que ejecuta una
+    sesión multi-ronda con un goal fijo; este endpoint es nuevo, no lo
+    reemplaza ni le cambia el contrato).
+
+    Reutiliza exactamente el mismo camino ya certificado que /redteam:
+    red_team_attacker.RedTeamAttacker (vía run_red_team_session) genera el
+    intento con Gemini real/offline, y _validate_attack_against_nexus (sin
+    modificar) lo hace pasar por MissionGeneratorCandidateProducer.
+    produce_batch -> mission_generator_candidates.validate_candidate_batch,
+    la misma frontera GOVERN que certifica candidatos legítimos. rounds=1
+    fijo: un intent, un intento, un incidente -- no una sesión.
+
+    Independencia gemini_fell / nexus_blocked (el punto central del demo):
+    - nexus_blocked viene de incident.blocked, calculado exclusivamente por
+      la validación de gobernanza determinista de arriba -- nunca por la
+      opinión de ningún LLM.
+    - gemini_fell viene de result.gemini_assessments[incident.incident_id],
+      la AUTO-evaluación que el propio Gemini ya hacía de su intento
+      (gemini_assess_attack, llamada real y separada que run_red_team_session
+      ya disparaba antes de este cambio -- aquí solo se expone su resultado
+      ya calculado, no se añade ninguna llamada nueva). SOPHISTICATED o
+      TRIVIAL -> Gemini reconoce haber intentado el vector de ataque
+      (gemini_fell=True); UNKNOWN (la llamada de auto-evaluación falló o no
+      se disparó, p.ej. cuando el intento NO fue bloqueado) -> False, nunca
+      se afirma una caída de Gemini sin una señal real.
+
+    boundary_blocked: hoy esta validación solo ejercita GOVERN (parseo
+    estricto de campos + capability_id contra el registro cerrado +
+    colisión de mission_id + depends_on circular) -- el intento nunca
+    llega a construir un grant HMAC-firmado, así que nunca alcanza
+    AUTHORIZE ni EXECUTE (esas fronteras se auditaron y reforzaron por
+    separado, Tramo 1/Tramo 2, sin relación con este flujo). "GOVERN" si
+    bloqueado, "NONE" si no."""
+
+    if not isinstance(intent, str) or not intent.strip() or len(intent) > MAX_REDTEAM_INTENT_CHARS:
+        raise CloudDemoConfigurationError("intent must be non-empty bounded text")
+    if mode not in ("offline", "real"):
+        raise CloudDemoConfigurationError("mode must be offline or real")
+
+    environment = os.environ if environ is None else environ
+    if mode == "real":
+        model_id = environment.get("GEMINI_MODEL")
+        if not isinstance(model_id, str) or not model_id:
+            raise CloudDemoConfigurationError("real mode requires GEMINI_MODEL")
+        api_key = environment.get("GEMINI_API_KEY")
+        if not isinstance(api_key, str) or not api_key:
+            raise CloudDemoConfigurationError("real mode requires GEMINI_API_KEY")
+    else:
+        model_id = None
+
+    transport, selected_model = build_transport(mode, model_id=model_id, environ=environment)
+    registry = default_provider_capability_registry()
+    result = run_red_team_session(
+        intent, registry, transport, rounds=1,
+        model_id=selected_model, use_gemma_fallback=True,
+    )
+    incident = result.incidents[0]
+    gemini_assessment = result.gemini_assessments.get(incident.incident_id, "UNKNOWN")
+    nexus_blocked = incident.blocked
+    gemini_fell = gemini_assessment in ("SOPHISTICATED", "TRIVIAL")
+
+    if incident.incident_id in result.escalated_incident_ids:
+        _QUARANTINE_STORE.put(incident.incident_id, result.quarantine_report)
+
+    return {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "mode": mode,
+        "session_id": result.session_id,
+        "incident_id": incident.incident_id,
+        "attack_constructed": _parse_attack_payload(incident.raw_attack_payload),
+        "boundary_blocked": "GOVERN" if nexus_blocked else "NONE",
+        "reason_code": _extract_reason_code(incident.rejection_reason),
+        "evidence_hash": incident.incident_hash,
+        "gemini_assessment": gemini_assessment,
+        "gemini_fell": gemini_fell,
+        "nexus_blocked": nexus_blocked,
+        "authority_effects": "NONE",
+    }
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "NexusGoogleDemo/1"
 
@@ -342,6 +461,9 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/redteam":
             self._handle_redteam()
             return
+        if self.path == "/redteam/attack":
+            self._handle_redteam_attack()
+            return
         self._json(404, {"status": "NOT_FOUND"})
 
     def _handle_demo(self, *, mode):
@@ -388,6 +510,45 @@ class Handler(BaseHTTPRequestHandler):
             result = run_cloud_redteam_session(rounds=rounds, mode=mode)
         except Exception as exc:  # fail closed without leaking SDK diagnostics
             category = getattr(exc, "category", "REDTEAM_FAILED")
+            self._json(503, {"status": "FAILED", "category": category, "authority_effects": "NONE"})
+            return
+        self._json(200, result)
+
+    def _read_redteam_attack_request(self):
+        length_header = self.headers.get("Content-Length", "0") or "0"
+        try:
+            length = int(length_header)
+        except ValueError as exc:
+            raise CloudDemoConfigurationError("invalid Content-Length") from exc
+        body = self.rfile.read(length) if length > 0 else b""
+        try:
+            payload = json.loads(body.decode("utf-8")) if body else {}
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise CloudDemoConfigurationError("request body must be valid JSON") from exc
+        if not isinstance(payload, dict):
+            raise CloudDemoConfigurationError("request body must be a JSON object")
+        intent = payload.get("intent")
+        if (
+            not isinstance(intent, str) or not intent.strip()
+            or len(intent) > MAX_REDTEAM_INTENT_CHARS
+        ):
+            raise CloudDemoConfigurationError("intent is required and must be non-empty bounded text")
+        mode = payload.get("mode", DEFAULT_REDTEAM_MODE)
+        if mode not in ("offline", "real"):
+            raise CloudDemoConfigurationError("mode must be offline or real")
+        return intent, mode
+
+    def _handle_redteam_attack(self):
+        try:
+            intent, mode = self._read_redteam_attack_request()
+        except CloudDemoConfigurationError:
+            # fail closed without leaking SDK diagnostics -- same discipline as _handle_redteam
+            self._json(400, {"status": "FAILED", "category": "CONFIGURATION", "authority_effects": "NONE"})
+            return
+        try:
+            result = run_cloud_redteam_attack(intent=intent, mode=mode)
+        except Exception as exc:  # fail closed without leaking SDK diagnostics
+            category = getattr(exc, "category", "REDTEAM_ATTACK_FAILED")
             self._json(503, {"status": "FAILED", "category": category, "authority_effects": "NONE"})
             return
         self._json(200, result)
