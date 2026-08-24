@@ -30,12 +30,12 @@ Look for: all matching tests `PASSED` — each one issues a real `AllowDecision`
 ## Scenario 3: Verify Merkle proof (MATCH) + tamper demo
 
 ```bash
-python3 engineering-loop/red_team_anchor.py verify <session_id>
+python3 engineering-loop/red_team_anchor.py verify redteam-20260824T230000
 ```
 
-Look for: `{"status": "MATCH", "merkle_root": "..."}`.
+Look for: `{"status": "MATCH", "merkle_root": "c867b385d07aa6d7b3397820e01d3a6c1a4a54d8a18e71b04764199277fa1eb2", "session_id": "redteam-20260824T230000"}` — verified live, commit [`b8199fe`](https://github.com/dixsystem/nexus-agentic-proof-anchor/commit/b8199fe32129e780060d689b2ca1c3094c8f5694).
 
-Requires a `session_id` that has already been escalated and anchored to the public GitHub repo (`dixsystem/nexus-agentic-proof-anchor`) — anchoring is a manual step run by the team (`red_team_anchor.py anchor <session_id>`), not something a judge triggers cold, since it needs `gh` write credentials. No session has been anchored yet as of this writing; the team will anchor one and fill in `<session_id>` here before presenting.
+Anchoring is a manual step run by the team (`red_team_anchor.py anchor <session_id>`), not something a judge triggers cold, since it needs `gh` write credentials to the public repo (`dixsystem/nexus-agentic-proof-anchor`). `verify` itself needs none — it only reads the live `/quarantine/session-<id>` endpoint and the public GitHub raw content, both unauthenticated.
 
 Tamper demonstration (run live): edit one field of the same session's stored JSON in the GCS quarantine bucket, then run the same `verify` command again.
 
