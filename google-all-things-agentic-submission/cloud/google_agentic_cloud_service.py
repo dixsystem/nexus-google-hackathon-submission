@@ -57,11 +57,26 @@ _SAFE_QUARANTINE_INCIDENT_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,255}\Z"
 # reutilizado, no reinventado.
 MAX_REDTEAM_INTENT_CHARS = 4000
 _SAFE_SESSION_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z")
-_PACKAGED_WEB_UI_PATH = Path(__file__).with_name("nexus-judge.html")
-_REPOSITORY_WEB_UI_PATH = Path(__file__).resolve().parents[2] / "nexus-judge.html"
-_WEB_UI_PATH = (
-    _PACKAGED_WEB_UI_PATH if _PACKAGED_WEB_UI_PATH.exists() else _REPOSITORY_WEB_UI_PATH
-)
+
+
+def _resolve_web_ui_path(module_file=None):
+    """Locate the UI lazily for both the container and checkout layouts."""
+    module_path = Path(__file__ if module_file is None else module_file).resolve()
+    module_dir = module_path.parent
+
+    packaged = module_dir / "nexus-judge.html"
+    if packaged.is_file():
+        return packaged
+
+    current = module_dir.parent
+    while True:
+        checkout = current / "nexus-judge.html"
+        if checkout.is_file():
+            return checkout
+        parent = current.parent
+        if parent == current:
+            return None
+        current = parent
 
 
 def _public_real_attack_enabled(environ=None) -> bool:
@@ -470,7 +485,10 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/":
             try:
-                content = _WEB_UI_PATH.read_text(encoding="utf-8")
+                web_ui_path = _resolve_web_ui_path()
+                if web_ui_path is None:
+                    raise FileNotFoundError("web UI is not packaged")
+                content = web_ui_path.read_text(encoding="utf-8")
                 if _public_real_attack_enabled():
                     content = content.replace(
                         'data-public-real-enabled="false"',

@@ -4,6 +4,7 @@ from contextlib import contextmanager
 from http.server import ThreadingHTTPServer
 import io
 import json
+from pathlib import Path
 import re
 import threading
 import unittest
@@ -86,7 +87,7 @@ class WebUIEndpointTests(unittest.TestCase):
 class WebUIStaticContractTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.html = subject._WEB_UI_PATH.read_text(encoding="utf-8")
+        cls.html = subject._resolve_web_ui_path().read_text(encoding="utf-8")
 
     def test_origin_timeout_and_real_proof_endpoint_are_preserved(self):
         self.assertIn("const BASE = window.location.origin;", self.html)
@@ -158,6 +159,13 @@ class HandlerNoSocketContractTests(unittest.TestCase):
         self.assertEqual(captured["status"], 404)
         self.assertEqual(json.loads(handler.wfile.getvalue())["status"], "NOT_FOUND")
 
+    def test_get_root_fails_controlled_when_html_is_absent(self):
+        handler, captured = _handler_without_socket("/")
+        with mock.patch.object(subject, "_resolve_web_ui_path", return_value=None):
+            handler.do_GET()
+        self.assertEqual(captured["status"], 503)
+        self.assertEqual(json.loads(handler.wfile.getvalue())["category"], "UI_UNAVAILABLE")
+
     def test_real_attack_is_blocked_before_transport_without_socket(self):
         handler, captured = _handler_without_socket(
             "/redteam/attack", body={"intent": "x", "mode": "real"}
@@ -186,6 +194,35 @@ class HandlerNoSocketContractTests(unittest.TestCase):
             handler.do_POST()
         self.assertEqual(captured["status"], 404)
         self.assertEqual(json.loads(handler.wfile.getvalue())["status"], "NOT_FOUND")
+
+
+class WebUIPathResolutionTests(unittest.TestCase):
+    def test_container_layout_prefers_html_next_to_module(self):
+        module = Path("/app/google_agentic_cloud_service.py")
+        with mock.patch.object(Path, "is_file", autospec=True) as is_file:
+            is_file.side_effect = lambda path: path == Path("/app/nexus-judge.html")
+            resolved = subject._resolve_web_ui_path(module)
+        self.assertEqual(resolved, Path("/app/nexus-judge.html"))
+        self.assertEqual(is_file.call_count, 1)
+
+    def test_checkout_layout_finds_html_at_repository_root(self):
+        module = Path("/repo/google-all-things-agentic-submission/cloud/google_agentic_cloud_service.py")
+        expected = Path("/repo/nexus-judge.html")
+        with mock.patch.object(Path, "is_file", autospec=True) as is_file:
+            is_file.side_effect = lambda path: path == expected
+            resolved = subject._resolve_web_ui_path(module)
+        self.assertEqual(resolved, expected)
+
+    def test_missing_html_returns_none_even_for_short_container_path(self):
+        with mock.patch.object(Path, "is_file", autospec=True, return_value=False):
+            resolved = subject._resolve_web_ui_path("/app/google_agentic_cloud_service.py")
+        self.assertIsNone(resolved)
+
+    def test_import_source_has_no_parents_index_and_no_eager_html_read(self):
+        source = Path(subject.__file__).read_text(encoding="utf-8")
+        prefix = source.split("class Handler", 1)[0]
+        self.assertNotIn(".parents[", source)
+        self.assertNotIn('read_text(encoding="utf-8")', prefix)
 
 
 class RedTeamOfflineFunctionTests(unittest.TestCase):
