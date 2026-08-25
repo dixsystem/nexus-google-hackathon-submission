@@ -45,6 +45,10 @@ class AnchorError(Exception):
     -- nunca una excepción sin categorizar cruza al CLI."""
 
 
+class AnchorNotFoundError(AnchorError):
+    """The requested public anchor does not exist."""
+
+
 def _require_session_id(session_id: str) -> str:
     if not isinstance(session_id, str) or _SESSION_ID_PATTERN.fullmatch(session_id) is None:
         raise AnchorError(f"invalid session_id: {session_id!r}")
@@ -184,7 +188,11 @@ def fetch_anchor_record(
     try:
         with urllib.request.urlopen(url, timeout=15) as response:
             return json.loads(response.read().decode("utf-8"))
-    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError) as exc:
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            raise AnchorNotFoundError("external anchor not found") from exc
+        raise AnchorError("failed to fetch external anchor") from exc
+    except (urllib.error.URLError, TimeoutError) as exc:
         raise AnchorError(f"failed to fetch anchor record from {url}: {exc}") from exc
 
 
@@ -215,6 +223,23 @@ def verify_session(
     session_id = _require_session_id(session_id)
     current_doc = fetch_session_document(session_id, base_url=base_url)
     anchored = fetch_anchor_record(session_id, repo=repo, branch=branch)
+
+    return verify_session_documents(session_id, current_doc, anchored)
+
+
+def verify_session_documents(session_id: str, current_doc: dict, anchored: dict) -> dict:
+    """Verify already-retrieved persisted and external anchor documents.
+
+    This seam lets the Cloud Run service read the session from its configured
+    persistence directly while the anchor still comes from public GitHub. It
+    never accepts either document from the HTTP client.
+    """
+
+    session_id = _require_session_id(session_id)
+    if not isinstance(current_doc, dict) or current_doc.get("session_id") != session_id:
+        raise AnchorError("persisted session does not match requested session_id")
+    if not isinstance(anchored, dict) or anchored.get("session_id") != session_id:
+        raise AnchorError("external anchor does not match requested session_id")
 
     incidents = tuple(
         red_team_incident.build_incident(

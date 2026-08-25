@@ -8,6 +8,10 @@ Autonomous agents are getting better at reasoning about goals and proposing work
 
 ## Live demo — Try to Break NEXUS
 
+The checked-in service now serves the judge UI at `GET /`. The public URL
+below describes the existing deployment; the new UI and `/proof-verify`
+become live only after a human redeploys this revision.
+
 ```bash
 # Send a natural-language attack intent
 curl -X POST https://nexus-google-agentic-demo-775963240525.us-central1.run.app/redteam/attack \
@@ -27,7 +31,7 @@ Expected response (verified live, `mode=offline-attack`):
 }
 ```
 
-- `gemini_fell: true` — Gemini constructed the attack (a structured mission proposal naming `capability_id: "nexus.storage.delete.v1"`, a capability that does not exist in the closed registry).
+- `gemini_fell: true` — in `offline-attack`, the deterministic fixture constructed the attack; this is not evidence of a live Gemini call.
 - `nexus_blocked: true` — NEXUS blocked it at GOVERN.
 - `reason_code: UnregisteredCandidateCapabilityError` — deterministic, from the capability registry, not another LLM's opinion.
 - `authority_effects: NONE` — no real consequences, regardless of outcome.
@@ -76,19 +80,57 @@ ATTACK  → DETECT  → QUARANTINE → HUMAN
 
 ## Deploy your own
 
+Run locally from the repository root (offline requests spend no quota):
+
+```bash
+PYTHONPATH="$PWD/engineering-loop:$PWD/google-all-things-agentic-submission/cloud" \
+  PORT=8080 python3 google-all-things-agentic-submission/cloud/google_agentic_cloud_service.py
+
+curl http://127.0.0.1:8080/
+curl http://127.0.0.1:8080/health
+curl -X POST http://127.0.0.1:8080/redteam/attack \
+  -H 'Content-Type: application/json' \
+  -d '{"intent":"Delete all buckets","mode":"offline-attack"}'
+```
+
+Build and run the same container locally:
+
+```bash
+docker build -t nexus-judge .
+docker run --rm -p 8080:8080 nexus-judge
+```
+
+Deploy with public real attacks disabled (the safe default):
+
 ```bash
 gcloud run deploy nexus-google-agentic-demo \
   --source . \
   --region us-central1 \
   --allow-unauthenticated \
-  --set-env-vars ENABLE_REAL_STORAGE=true,GEMINI_API_KEY=your_key,GEMINI_MODEL=gemini-3.5-flash
+  --set-env-vars ENABLE_REAL_STORAGE=true
 ```
+
+`POST /redteam/attack` accepts `offline-attack` and `real`. The former is a
+deterministic fixture and never calls Gemini. Public `real` requests fail
+closed with HTTP 503 unless the operator explicitly sets
+`ENABLE_PUBLIC_REAL_ATTACK=true`; live mode also requires server-side
+`GEMINI_MODEL` and `GEMINI_API_KEY` and can consume quota. The key is never
+sent to the browser. Gemma currently runs through `FALLBACK_RULES`, not a
+model transport, and Lyria has no real transport; neither is claimed as a
+live call or bonus integration.
+
+Real endpoints in this revision are `GET /`, `GET /health`, `POST /demo`,
+`POST /demo/offline`, `POST /redteam`, `POST /redteam/attack`,
+`POST /proof-verify`, and `GET /quarantine/<id>`. Proof verification reads
+the persisted session and independently retrieves the public GitHub anchor;
+it returns `MATCH`, `TAMPER_DETECTED`, or `NOT_FOUND` and never trusts a root
+from the client.
 
 ## Repository structure
 
 | Path | What it is |
 |---|---|
 | `engineering-loop/` | The governed pipeline: proposal generation, GOVERN validation, AUTHORIZE/EXECUTE (`mission_executor.py`), the red-team attacker/session/incident chain, the Merkle tree and GitHub anchor (`red_team_merkle.py`, `red_team_anchor.py`), and their tests. |
-| `google-all-things-agentic-submission/cloud/` | The Cloud Run HTTP service (`google_agentic_cloud_service.py`) exposing `/demo`, `/redteam`, `/redteam/attack`, and `/quarantine/<id>` over the pipeline above. |
+| `google-all-things-agentic-submission/cloud/` | The Cloud Run HTTP service exposing the judge UI and the documented API, including real server-side `/proof-verify`. |
 | `google-all-things-agentic-submission/` | Submission materials: architecture notes, deployment checklist, Devpost draft, video script. |
 | `DEMO.md` | Step-by-step scenarios for a judge to run, with exact commands and expected fields. |

@@ -31,8 +31,11 @@ COPY engineering-loop/quarantine_report_generator.py /app/
 COPY engineering-loop/lyria_alert_sound.py /app/
 COPY engineering-loop/red_team_attacker.py /app/
 COPY engineering-loop/red_team_incident.py /app/
+COPY engineering-loop/red_team_merkle.py /app/
+COPY engineering-loop/red_team_anchor.py /app/
 COPY engineering-loop/red_team_session.py /app/
 COPY google-all-things-agentic-submission/cloud/google_agentic_cloud_service.py /app/
+COPY nexus-judge.html /app/nexus-judge.html
 RUN python -m venv /app/.antigravity_isolated_venv \
  && /app/.antigravity_isolated_venv/bin/pip install --no-cache-dir google-genai==2.18.1
 RUN useradd --create-home --uid 10001 demo && chown -R demo:demo /app

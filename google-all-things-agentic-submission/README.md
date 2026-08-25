@@ -90,7 +90,8 @@ contest's Gemini 3.5-or-newer requirement.
 See [ARCHITECTURE.md](ARCHITECTURE.md#red-team-module) for what this
 exercises: a Gemini attacker's raw, unvalidated attempts run through the
 same NEXUS validation as the demo above, get recorded as hash-chained
-incidents, classified by Gemma, and — only on triple-filter agreement —
+incidents, classified by the current Gemma `FALLBACK_RULES` adapter (not a
+live Gemma transport), and — only on triple-filter agreement —
 consolidated into a quarantine report. Nothing here ever executes a mission;
 `mission_executor.py` (M-6) requires a separate, explicit human `ALLOW`
 this module never generates.
@@ -173,9 +174,13 @@ See [ARCHITECTURE.md](ARCHITECTURE.md).
 - Google Gen AI SDK: the supported Google agent framework used by the isolated backend (google-genai==2.18.1).
 - Google Cloud infrastructure: deployed and verified on Cloud Run.
 
-## Deployed Cloud Run service
+## Cloud Run service
 
 Live URL: https://nexus-google-agentic-demo-775963240525.us-central1.run.app
+
+This URL identifies the previously verified deployment. The judge UI and
+`POST /proof-verify` in the current working tree require a later human
+redeploy; this repository change does not claim they are already live.
 
 Health check: curl https://nexus-google-agentic-demo-775963240525.us-central1.run.app/health
 Offline demo: curl -X POST https://nexus-google-agentic-demo-775963240525.us-central1.run.app/demo/offline
@@ -189,6 +194,11 @@ curl -X POST https://nexus-google-agentic-demo-775963240525.us-central1.run.app/
 curl https://nexus-google-agentic-demo-775963240525.us-central1.run.app/quarantine/<incident_id>
 ```
 
+After redeploying this revision, `GET /` serves `nexus-judge.html` and
+`POST /proof-verify` accepts only `{"session_id":"..."}`. It verifies the
+persisted session against the independently retrieved public GitHub anchor;
+the client cannot provide the trusted root. Lyria has no real transport.
+
 Verified live (offline mode, no quota spent) with a real `HTTP 200`,
 `status=COMPLETED` response — see `NIGHT_QUESTIONS.md`, entry dated
 2026-08-22 ("PASO 1 corrección (v2)"), for the raw evidence. See "Run a red
@@ -198,10 +208,16 @@ command.
 Redeploy from a clean checkout:
 1. git clone https://github.com/dixsystem/nexus-google-hackathon-submission.git
 2. cd nexus-google-hackathon-submission
-3. export GEMINI_API_KEY=your-key-here
+3. `read -rsp 'Gemini API key: ' GEMINI_API_KEY && export GEMINI_API_KEY && echo`
+   The input remains hidden, is not written to shell history, and must never be committed.
 4. gcloud config set project your-gcp-project
 5. gcloud services enable run.googleapis.com cloudbuild.googleapis.com
-6. gcloud run deploy nexus-google-agentic-demo --source=. --region=us-central1 --allow-unauthenticated --set-env-vars=GEMINI_API_KEY=$GEMINI_API_KEY,GEMINI_MODEL=gemini-3.5-flash --port=8080
+6. `gcloud run deploy nexus-google-agentic-demo --source=. --region=us-central1 --allow-unauthenticated --set-env-vars=ENABLE_REAL_STORAGE=true --port=8080`
+
+Public web `mode=real` is disabled by default. Enabling it is an explicit
+operator decision requiring `ENABLE_PUBLIC_REAL_ATTACK=true`,
+`GEMINI_MODEL`, and a server-side `GEMINI_API_KEY`; it can consume quota.
+`offline-attack` is a deterministic fixture and makes no real Gemini call.
 
 A root-level Dockerfile (copy of google-all-things-agentic-submission/cloud/Dockerfile) is committed so gcloud run deploy --source=. finds it without extra flags.
 
@@ -219,4 +235,3 @@ during the contest.
 
 This demo ends at validated staging. Human approval and any later promotion
 or execution are deliberately outside the submission demo.
-

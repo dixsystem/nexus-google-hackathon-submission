@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from http.server import ThreadingHTTPServer
+import io
 import json
 import re
 import threading
@@ -59,6 +60,132 @@ def _http_request(url, *, method="GET", body=None):
             return response.status, json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         return exc.code, json.loads(exc.read().decode("utf-8"))
+
+
+def _raw_http_request(url):
+    with urllib.request.urlopen(url, timeout=10) as response:
+        return response.status, response.headers.get("Content-Type"), response.read().decode("utf-8")
+
+
+class WebUIEndpointTests(unittest.TestCase):
+    def test_root_serves_original_ui_with_correct_content_type(self):
+        with _running_server() as base_url:
+            status, content_type, body = _raw_http_request(f"{base_url}/")
+        self.assertEqual(status, 200)
+        self.assertEqual(content_type, "text/html; charset=utf-8")
+        self.assertIn("const BASE = window.location.origin;", body)
+        self.assertNotIn("const BASE = 'https://nexus-google-agentic-demo", body)
+
+    def test_root_disables_public_real_mode_by_default(self):
+        with mock.patch.dict("os.environ", {}, clear=True):
+            with _running_server() as base_url:
+                _, _, body = _raw_http_request(f"{base_url}/")
+        self.assertIn('data-public-real-enabled="false"', body)
+
+
+class WebUIStaticContractTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.html = subject._WEB_UI_PATH.read_text(encoding="utf-8")
+
+    def test_origin_timeout_and_real_proof_endpoint_are_preserved(self):
+        self.assertIn("const BASE = window.location.origin;", self.html)
+        self.assertNotIn("const BASE = 'https://", self.html)
+        self.assertIn("AbortController", self.html)
+        self.assertIn("requestJson('/proof-verify'", self.html)
+
+    def test_sound_is_off_initially_without_autoplay_or_external_audio(self):
+        self.assertIn("let soundEnabled = false;", self.html)
+        self.assertIn('aria-pressed="false">Sound off', self.html)
+        self.assertNotIn("autoplay", self.html.lower())
+        self.assertNotIn("<audio", self.html.lower())
+        self.assertIn("AudioContext", self.html)
+
+    def test_challenge_copy_and_honest_language_are_present(self):
+        self.assertIn("ATTACK", self.html)
+        self.assertIn("GOVERN", self.html)
+        self.assertIn("REVIEW REQUIRED", self.html)
+        self.assertIn("Round-trip time", self.html)
+        self.assertIn("5 adversarial prompts tested", self.html)
+        self.assertNotIn("100% secure", self.html.lower())
+        self.assertNotIn("all attacks defeated", self.html.lower())
+
+    def test_receipt_uses_exact_closed_field_list(self):
+        match = re.search(r"const RECEIPT_FIELDS = Object\.freeze\(\[(.*?)\]\);", self.html, re.S)
+        self.assertIsNotNone(match)
+        fields = re.findall(r"'([^']+)'", match.group(1))
+        self.assertEqual(fields, [
+            "timestamp", "mode", "session_id", "incident_id", "boundary_blocked",
+            "reason_code", "evidence_hash", "nexus_blocked", "authority_effects",
+        ])
+        copy_function = self.html.split("async function copyEvidenceReceipt()", 1)[1].split(
+            "function tryAnotherAttack()", 1
+        )[0]
+        self.assertNotIn("attack_constructed", copy_function)
+
+    def test_remote_result_rendering_never_uses_inner_html(self):
+        self.assertNotIn("innerHTML", self.html)
+        self.assertIn("textContent", self.html)
+        self.assertIn("prefers-reduced-motion", self.html)
+
+
+def _handler_without_socket(path, *, body=None):
+    """Construct a Handler and capture its response without opening a socket."""
+    handler = subject.Handler.__new__(subject.Handler)
+    encoded = json.dumps(body).encode("utf-8") if body is not None else b""
+    handler.path = path
+    handler.headers = {"Content-Length": str(len(encoded))}
+    handler.rfile = io.BytesIO(encoded)
+    handler.wfile = io.BytesIO()
+    captured = {"status": None, "headers": {}}
+    handler.send_response = lambda status: captured.__setitem__("status", status)
+    handler.send_header = lambda key, value: captured["headers"].__setitem__(key, value)
+    handler.end_headers = lambda: None
+    return handler, captured
+
+
+class HandlerNoSocketContractTests(unittest.TestCase):
+    def test_get_root_constructs_html_response_without_socket(self):
+        handler, captured = _handler_without_socket("/")
+        handler.do_GET()
+        self.assertEqual(captured["status"], 200)
+        self.assertEqual(captured["headers"]["Content-Type"], "text/html; charset=utf-8")
+        self.assertIn(b"window.location.origin", handler.wfile.getvalue())
+
+    def test_unknown_route_remains_json_404_without_socket(self):
+        handler, captured = _handler_without_socket("/unknown")
+        handler.do_GET()
+        self.assertEqual(captured["status"], 404)
+        self.assertEqual(json.loads(handler.wfile.getvalue())["status"], "NOT_FOUND")
+
+    def test_real_attack_is_blocked_before_transport_without_socket(self):
+        handler, captured = _handler_without_socket(
+            "/redteam/attack", body={"intent": "x", "mode": "real"}
+        )
+        with mock.patch.dict("os.environ", {}, clear=True), \
+             mock.patch.object(subject, "run_cloud_redteam_attack") as transport:
+            handler.do_POST()
+        self.assertEqual(captured["status"], 503)
+        self.assertEqual(json.loads(handler.wfile.getvalue())["category"], "REAL_MODE_DISABLED")
+        transport.assert_not_called()
+
+    def test_proof_payload_rejects_extra_root_without_socket(self):
+        handler, captured = _handler_without_socket(
+            "/proof-verify", body={"session_id": "sess-proof", "merkle_root": "client-root"}
+        )
+        with mock.patch.object(subject, "fetch_anchor_record") as fetch_anchor:
+            handler.do_POST()
+        self.assertEqual(captured["status"], 400)
+        fetch_anchor.assert_not_called()
+
+    def test_proof_not_found_without_socket(self):
+        handler, captured = _handler_without_socket(
+            "/proof-verify", body={"session_id": "missing"}
+        )
+        with mock.patch.object(subject._QUARANTINE_STORE, "get", return_value=None):
+            handler.do_POST()
+        self.assertEqual(captured["status"], 404)
+        self.assertEqual(json.loads(handler.wfile.getvalue())["status"], "NOT_FOUND")
 
 
 class RedTeamOfflineFunctionTests(unittest.TestCase):
@@ -771,9 +898,8 @@ class RedTeamAttackEndpointHTTPTests(unittest.TestCase):
 
     def test_post_redteam_attack_passes_intent_and_mode_through(self):
         fake_result = {"nexus_blocked": True}
-        with mock.patch.object(
-            subject, "run_cloud_redteam_attack", return_value=fake_result
-        ) as mocked:
+        with mock.patch.dict("os.environ", {"ENABLE_PUBLIC_REAL_ATTACK": "true"}, clear=True), \
+             mock.patch.object(subject, "run_cloud_redteam_attack", return_value=fake_result) as mocked:
             with _running_server() as base_url:
                 status, payload = _http_request(
                     f"{base_url}/redteam/attack", method="POST",
@@ -782,6 +908,18 @@ class RedTeamAttackEndpointHTTPTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertTrue(payload["nexus_blocked"])
         mocked.assert_called_once_with(intent="delete all buckets", mode="real")
+
+    def test_public_real_mode_is_blocked_by_default_without_touching_transport(self):
+        with mock.patch.dict("os.environ", {}, clear=True), \
+             mock.patch.object(subject, "run_cloud_redteam_attack") as mocked:
+            with _running_server() as base_url:
+                status, payload = _http_request(
+                    f"{base_url}/redteam/attack", method="POST",
+                    body={"intent": "delete all buckets", "mode": "real"},
+                )
+        self.assertEqual(status, 503)
+        self.assertEqual(payload["category"], "REAL_MODE_DISABLED")
+        mocked.assert_not_called()
 
     def test_post_redteam_attack_fails_closed_without_leaking_internal_diagnostics(self):
         with mock.patch.object(
@@ -797,6 +935,42 @@ class RedTeamAttackEndpointHTTPTests(unittest.TestCase):
         self.assertNotIn("secret internal detail", json.dumps(payload))
 
 
+class ProofVerifyEndpointHTTPTests(unittest.TestCase):
+    def setUp(self):
+        subject._QUARANTINE_STORE = subject.QuarantineStore()
+        subject._QUARANTINE_STORE.put("session-sess-proof", json.dumps({"session_id": "sess-proof"}))
+
+    def tearDown(self):
+        subject._QUARANTINE_STORE = subject.QuarantineStore()
+
+    def test_proof_verify_match(self):
+        with mock.patch.object(subject, "fetch_anchor_record", return_value={"session_id": "sess-proof"}), \
+             mock.patch.object(subject, "verify_session_documents", return_value={"status": "MATCH"}):
+            with _running_server() as base_url:
+                status, payload = _http_request(f"{base_url}/proof-verify", method="POST", body={"session_id": "sess-proof"})
+        self.assertEqual((status, payload["status"]), (200, "MATCH"))
+
+    def test_proof_verify_tamper_detected(self):
+        result = {"status": "TAMPER_DETECTED", "leaf_index": 0}
+        with mock.patch.object(subject, "fetch_anchor_record", return_value={"session_id": "sess-proof"}), \
+             mock.patch.object(subject, "verify_session_documents", return_value=result):
+            with _running_server() as base_url:
+                status, payload = _http_request(f"{base_url}/proof-verify", method="POST", body={"session_id": "sess-proof"})
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["status"], "TAMPER_DETECTED")
+
+    def test_proof_verify_not_found(self):
+        with _running_server() as base_url:
+            status, payload = _http_request(f"{base_url}/proof-verify", method="POST", body={"session_id": "missing"})
+        self.assertEqual((status, payload["status"]), (404, "NOT_FOUND"))
+
+    def test_proof_verify_rejects_invalid_session_id(self):
+        with mock.patch.object(subject, "fetch_anchor_record") as mocked:
+            with _running_server() as base_url:
+                status, _ = _http_request(f"{base_url}/proof-verify", method="POST", body={"session_id": "../../secret"})
+        self.assertEqual(status, 400)
+        mocked.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()
-

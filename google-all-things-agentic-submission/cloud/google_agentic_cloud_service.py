@@ -18,6 +18,7 @@ from mission_generator_llm_producer import MissionGeneratorCandidateProducer
 from mission_proposal_staging import stage_proposal_batch
 from provider_capability_registry import default_provider_capability_registry
 from red_team_session import run_red_team_session
+from red_team_anchor import AnchorError, AnchorNotFoundError, fetch_anchor_record, verify_session_documents
 
 
 _GOAL = "Verify the governed Google agentic proposal pipeline"
@@ -55,6 +56,17 @@ _SAFE_QUARANTINE_INCIDENT_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,255}\Z"
 # aplica a RedTeamSession.goal (_require_text(..., maximum=4000)) --
 # reutilizado, no reinventado.
 MAX_REDTEAM_INTENT_CHARS = 4000
+_SAFE_SESSION_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z")
+_PACKAGED_WEB_UI_PATH = Path(__file__).with_name("nexus-judge.html")
+_REPOSITORY_WEB_UI_PATH = Path(__file__).resolve().parents[2] / "nexus-judge.html"
+_WEB_UI_PATH = (
+    _PACKAGED_WEB_UI_PATH if _PACKAGED_WEB_UI_PATH.exists() else _REPOSITORY_WEB_UI_PATH
+)
+
+
+def _public_real_attack_enabled(environ=None) -> bool:
+    environment = os.environ if environ is None else environ
+    return str(environment.get("ENABLE_PUBLIC_REAL_ATTACK", "")).strip().lower() == "true"
 
 # Extrae, de forma puramente determinista (sin ningún juicio de un LLM), el
 # código corto ya presente en el rejection_reason que la validación de
@@ -447,7 +459,29 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(encoded)
 
+    def _html(self, status, content):
+        encoded = content.encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(encoded)))
+        self.end_headers()
+        self.wfile.write(encoded)
+
     def do_GET(self):
+        if self.path == "/":
+            try:
+                content = _WEB_UI_PATH.read_text(encoding="utf-8")
+                if _public_real_attack_enabled():
+                    content = content.replace(
+                        'data-public-real-enabled="false"',
+                        'data-public-real-enabled="true"',
+                        1,
+                    )
+            except OSError:
+                self._json(503, {"status": "FAILED", "category": "UI_UNAVAILABLE"})
+                return
+            self._html(200, content)
+            return
         if self.path == "/health":
             self._json(200, {"status": "LIVE", "authority_effects": "NONE"})
             return
@@ -480,6 +514,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         if self.path == "/redteam/attack":
             self._handle_redteam_attack()
+            return
+        if self.path == "/proof-verify":
+            self._handle_proof_verify()
             return
         self._json(404, {"status": "NOT_FOUND"})
 
@@ -562,6 +599,12 @@ class Handler(BaseHTTPRequestHandler):
             # fail closed without leaking SDK diagnostics -- same discipline as _handle_redteam
             self._json(400, {"status": "FAILED", "category": "CONFIGURATION", "authority_effects": "NONE"})
             return
+        if mode == "real" and not _public_real_attack_enabled():
+            self._json(503, {
+                "status": "FAILED", "category": "REAL_MODE_DISABLED",
+                "authority_effects": "NONE",
+            })
+            return
         try:
             result = run_cloud_redteam_attack(intent=intent, mode=mode)
         except Exception as exc:  # fail closed without leaking SDK diagnostics
@@ -569,6 +612,47 @@ class Handler(BaseHTTPRequestHandler):
             self._json(503, {"status": "FAILED", "category": category, "authority_effects": "NONE"})
             return
         self._json(200, result)
+
+    def _handle_proof_verify(self):
+        try:
+            _, session_id = self._read_proof_request()
+        except CloudDemoConfigurationError:
+            self._json(400, {"status": "FAILED", "category": "CONFIGURATION"})
+            return
+        stored = _QUARANTINE_STORE.get(f"session-{session_id}")
+        if stored is None:
+            self._json(404, {"status": "NOT_FOUND", "session_id": session_id})
+            return
+        try:
+            session_doc = json.loads(stored)
+            anchored = fetch_anchor_record(session_id)
+            result = verify_session_documents(session_id, session_doc, anchored)
+        except AnchorNotFoundError:
+            self._json(404, {"status": "NOT_FOUND", "session_id": session_id})
+            return
+        except (AnchorError, ValueError, TypeError, KeyError, json.JSONDecodeError):
+            self._json(503, {"status": "FAILED", "category": "PROOF_UNAVAILABLE"})
+            return
+        self._json(200, result)
+
+    def _read_proof_request(self):
+        length_header = self.headers.get("Content-Length", "0") or "0"
+        try:
+            length = int(length_header)
+        except ValueError as exc:
+            raise CloudDemoConfigurationError("invalid Content-Length") from exc
+        if length < 1 or length > 4096:
+            raise CloudDemoConfigurationError("invalid proof request size")
+        try:
+            payload = json.loads(self.rfile.read(length).decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise CloudDemoConfigurationError("request body must be valid JSON") from exc
+        if not isinstance(payload, dict) or set(payload) != {"session_id"}:
+            raise CloudDemoConfigurationError("request must contain only session_id")
+        session_id = payload.get("session_id")
+        if not isinstance(session_id, str) or _SAFE_SESSION_ID.fullmatch(session_id) is None:
+            raise CloudDemoConfigurationError("invalid session_id")
+        return payload, session_id
 
 
 def main():
@@ -582,4 +666,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
